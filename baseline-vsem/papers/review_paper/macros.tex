@@ -1,0 +1,253 @@
+% Latex macros for surrogate uncertainty propagation paper.
+% Andrew Roberts
+
+\usepackage{dsfont}
+
+
+% Emphasize works inline (e.g., for defining terms, etc.)
+\newcommand{\inlinedef}[1]{\textbf{#1}}
+
+
+% --------------------------------------------------------------------------------------------------
+% Bayesian inverse problem.
+% --------------------------------------------------------------------------------------------------
+\newcommand{\GaussianCDF}{\Phi}
+
+% --------------------------------------------------------------------------------------------------
+% Bayesian inverse problem.
+% --------------------------------------------------------------------------------------------------
+
+% General inverse problems.
+\newcommand{\Par}{u}
+\newcommand{\ParBatch}{U}
+\newcommand{\parSpace}{\mathbb{U}} % Parameter space
+\newcommand{\dimPar}{D} % Parameter dimension 
+\newcommand{\idxParDim}{d} % Primary symbol used to index each parameter dimension. 
+\newcommand{\obs}{y} % Data observation (response) vector
+\newcommand{\noise}{\epsilon} % Random variable representing noise, typically in additive noise model. 
+\newcommand{\obsSpace}{\mathbb{Y}} % Output space
+\newcommand{\dimObs}{P} % Dimension of data observation vector
+\newcommand{\idxObsDim}{p} % Primary symbol used to index each data dimension. 
+\newcommand{\fwd}{\mathcal{G}} % Forward model
+\newcommand{\llik}{\mathcal{L}} % Log-likelihood 
+\newcommand{\lik}{\mathsf{L}} % Likelihood 
+\newcommand{\priorDens}{\pi_0} % Prior density 
+\newcommand{\postDens}{\tilde{\pi}}
+\newcommand{\postDensNorm}{\pi}
+
+\newcommand{\normCst}{Z} % Normalizing constant for posterior density. 
+\newcommand{\likPar}{\Sigma} % Likelihood parameter
+\newcommand{\ParTrue}{\Par_{\star}}
+
+% --------------------------------------------------------------------------------------------------
+% Surrogates
+% --------------------------------------------------------------------------------------------------
+
+% General notation for representing emulated quantity
+\newcommand{\Em}[2][\Ndesign]{{#2}_{#1}}
+
+% Emulator target
+\newcommand{\target}{\mathsf{f}} % Target map for emulation
+\newcommand{\targetEm}[1][\Ndesign]{f_{#1}} % Emulator for target quantity
+\newcommand{\targetTraj}{f} % Trajectory of emulator for target map
+\newcommand{\emMean}[1][\Ndesign]{\mu_{#1}}
+\newcommand{\emSD}[1][\Ndesign]{s_{#1}}
+\newcommand{\emVar}[1][\Ndesign]{s^2_{#1}}
+\newcommand{\emKer}[1][\Ndesign]{k_{#1}}
+\newcommand{\emDist}[1][\Ndesign]{\nu_{#1}} % Predictive distribution (law) of the emulator (a stochastic process)
+\newcommand{\emDistPrior}{\emDist_0} % Prior predictive distribution of emulator
+\newcommand{\emE}{\E_{\emDist}} % Expectation wrt emulator distribution.
+\newcommand{\quantileProb}{\alpha}
+\newcommand{\emQ}{\mathbb{Q}^\quantileProb_{\Ndesign}} % Quantile wrt emulator distribution
+\newcommand{\emObs}{z} % The design set used to train the emulator.
+\newcommand{\targetRange}{\mathbb{F}} % Codomain for the target function.
+\newcommand{\emLik}{\lik_{\target}} % Likelihood for emulator model for training on simulation data
+
+% Design points
+\newcommand{\Ndesign}{N}
+\newcommand{\Nbatch}{B}
+\newcommand{\designIdx}{n}
+\newcommand{\design}{U_{\Ndesign}}
+
+% Gaussian processes
+\newcommand{\GP}{\mathcal{GP}} % GP distribution.
+\newcommand{\LNP}{\mathcal{LNP}} % Log-normal process distribution.
+\newcommand{\gpMeanBase}{\mu} % The base notation used for GP mean (no sub/superscripts). 
+\newcommand{\gpKerBase}{k}
+\newcommand{\gpMeanPrior}{\gpMeanBase_0}
+\newcommand{\gpKerPrior}{\gpKerBase_0}
+\newcommand{\gpMean}[1][\star]{\gpMeanBase_{#1}}
+\newcommand{\gpKer}[1][\star]{\gpKerBase_{#1}}
+
+% Surrogate posterior approximations
+\newcommand{\ep}{\mathrm{ep}}
+\newcommand{\eup}{\mathrm{eup}}
+\newcommand{\postEm}[1][\Ndesign]{\Em[#1]{\postDens}}
+\newcommand{\postNormEm}{\Em{\postDensNorm}}
+\newcommand{\normCstEm}{\Em{\normCst}}
+\newcommand{\postApproxEP}{\Em{\postDensNorm}^{\ep}}
+\newcommand{\postApproxMean}{\Em{\postDens}^{\mathrm{mean}}}
+\newcommand{\postApproxEUP}{\Em{\postDens}^{\eup}}
+\newcommand{\postApproxEUPNorm}{\Em{\postDensNorm}^{\eup}}
+\newcommand{\postApproxNormMean}{\Em{\postDensNorm}^{\mathrm{mean}}}
+\newcommand{\postApproxQuantileNorm}{\Em{\postDensNorm}^{\quantileProb}}
+
+% Likelihood approximations.
+\newcommand{\likApproxEP}{\Em{\lik}^{\ep}}
+\newcommand{\likApproxEUP}{\Em{\lik}^{\eup}}
+
+% Surrogates involving basis functions
+\newcommand{\idxBasis}{r}
+\newcommand{\dimBasis}{R}
+\newcommand{\basisVec}{\psi}
+
+% --------------------------------------------------------------------------------------------------
+% Active Learning
+% --------------------------------------------------------------------------------------------------
+
+\newcommand{\acq}{\mathcal{A}}
+\newcommand{\ParBatchOpt}{\ParBatch_\star}
+\newcommand{\Naugment}{\Ndesign + \Nbatch}
+\newcommand{\ParBatchAug}{\ParBatch_{\Naugment}}
+\newcommand{\emEAug}{\E_{\emDist[\Naugment]}}
+\newcommand{\bayesrisk}[1][\Ndesign]{\risk_{#1}}
+\newcommand{\weightdens}{\rho}
+\newcommand{\batchResponse}{\gamma}
+\newcommand{\surmetric}{\mathcal{H}}
+\newcommand{\CovComb}[1][\Ndesign]{C_{#1}}
+\newcommand{\varInflation}{\tau}
+
+% --------------------------------------------------------------------------------------------------
+% Proofs and Theoretical Sections
+% --------------------------------------------------------------------------------------------------
+
+% Variational formulation.
+\newcommand{\qMeas}{Q} % Generic prob measure on parSpace (used in variational formulation)
+\newcommand{\qDensNorm}{q} % Density of qDens.
+\newcommand{\qSpaceNorm}{\mathcal{Q}} % Space of densities or measures.
+\newcommand{\qDens}{\tilde{q}} % Density of qDens.
+\newcommand{\qSpace}{\tilde{\mathcal{Q}}} % Space of densities or measures.
+\newcommand{\loss}{\mathcal{L}}
+\newcommand{\gibbsloss}{\ell}
+\newcommand{\gibbsrate}{\beta}
+\newcommand{\risk}{\mathcal{R}}
+\newcommand{\qDensNormOpt}{\qDensNorm_{\mathrm{opt}}} % Solution of optimization problem
+\newcommand{\qDensOpt}{\qDens_{\mathrm{opt}}} 
+\newcommand{\qMeasOpt}{\qMeas_{\mathrm{opt}}}
+
+% Analyzing EUP vs. EP
+\newcommand{\jgap}{\Delta_\normCst} % The "Jensen gap" for the normalizing constant.
+
+% Fully Bayesian/Kennedy and O'Hagan formulation.
+\newcommand{\jointKOH}{\zeta} % Joint distribution over both surrogate and calibration parameters (as in KOH setup)
+\newcommand{\postKOH}{\jointKOH^{\obs, \emObs}} % Posterior of the joint distribution
+\newcommand{\condMargKOH}{\jointKOH^{\obs,\targetTraj}_{\Par}} % Marginal conditional of \Par, given \targetTraj and \obs.
+\newcommand{\qCond}{T_{\qMeas}} % In the KOH context we have \qMeas(d\Par,d\targetTraj) = \emDist(d\targetTraj)\qCond(\targetTraj, d\Par)
+\newcommand{\qSpaceCut}{\qSpace_{\mathrm{cut}}}
+
+% Measure-theoretic details for proofs.
+\newcommand{\emJoint}{\eta} % Joint measure over (u,f)
+\newcommand{\BorelSig}{\mathcal{B}}
+\newcommand{\emSpace}{\mathcal{F}}
+\newcommand{\emSig}{\mathcal{A}} % Sigma algebra in function space for emulator
+\newcommand{\refMeas}{\lambda} % Reference measure on parameter space
+
+% --------------------------------------------------------------------------------------------------
+% Markov Chain Monte Carlo. 
+% --------------------------------------------------------------------------------------------------
+
+% General
+\newcommand{\sampleIndex}{k} % Generic index for samples. 
+\newcommand{\NSample}{K} % Generic variable for algorithms that draw a set of samples (e.g., MCMC)
+\newcommand{\indexSample}[2][\sampleIndex]{{#2}_{#1}}
+\newcommand{\indexMCMC}[2][\sampleIndex]{\indexSample[{#1}]{#2}}
+\newcommand{\NMCMC}{\NSample} % Number MCMC samples
+\newcommand{\accProbMH}{\alpha} % Metropolis-Hastings acceptance probability
+
+% Proposal distribution.
+\newcommand{\propDens}{q} % Proposal density
+\newcommand{\propDist}{Q} % Proposal distribution (measure)
+\newcommand{\propDistPar}{\propDist_{\Par}}
+\newcommand{\propDensPar}{\propDens_{\Par}}
+\newcommand{\propDistTarget}{\propDist_{\target}}
+\newcommand{\propPar}{\tilde{\Par}} % Proposed parameter value
+\newcommand{\targetTrajProp}{\tilde{\targetTraj}} % Proposed value of target trajectory
+
+% Random kernel MCMC
+\newcommand{\MarkovKer}{\mathsf{P}}
+\newcommand{\MarkovKerPar}{\MarkovKer_{\Par}}
+\newcommand{\MarkovKerTarget}{\MarkovKer_{\target}}
+\newcommand{\randomKer}[1][\targetTraj]{P_{#1}} % TODO: remove this
+
+% Preconditioned Crank-Nicholson
+\newcommand{\pcnCor}{\rho}
+
+% --------------------------------------------------------------------------------------------------
+% Dynamical Models. 
+% --------------------------------------------------------------------------------------------------
+
+\newcommand{\Time}{t}
+\newcommand{\state}{x}
+\newcommand{\odeRHS}{F}
+\newcommand{\timeStart}{\Time_0}
+\newcommand{\timeEnd}{\Time_1}
+\newcommand{\stateIC}{\state_{\circ}}
+\newcommand{\dimState}{S}
+\newcommand{\stateIndex}{s}
+\newcommand{\indexState}[2][\stateIndex]{{#2}^{({#1})}}
+\newcommand{\solutionOp}{\mathcal{S}}
+\newcommand{\obsOp}{\mathcal{H}}
+\newcommand{\timeIndex}{\sampleIndex}
+\newcommand{\indexTime}[2][\timeIndex]{{#2}_{#1}}
+\newcommand{\NTimeStep}{\NSample}
+\newcommand{\forcing}{w}
+
+% --------------------------------------------------------------------------------------------------
+% Numerical example: linear Gaussian model
+% --------------------------------------------------------------------------------------------------
+
+\newcommand{\fwdLin}{G} % Linear forward model
+\newcommand{\priorMean}{m_0} 
+\newcommand{\priorCov}{C_0}
+\newcommand{\postMean}{m}
+\newcommand{\postCov}{C}
+\newcommand{\noiseCov}{\Sigma}
+\newcommand{\emBias}{r}
+\newcommand{\emCov}{Q}
+\newcommand{\postMeanEP}{\postMean^{\ep}}
+\newcommand{\postMeanEUP}{\postMean^{\eup}}
+\newcommand{\postCovEP}{\postCov^{\ep}}
+\newcommand{\postCovEUP}{\postCov^{\eup}}
+\newcommand{\epGain}{H} % = \postCov \fwdLin^\top \noiseCov^{-1}
+\newcommand{\eupNoiseCov}{\tilde{\noiseCov}} % = \noiseCov + \emCov
+\newcommand{\eupObs}{\tilde{\obs}} % = \obs - \emBias
+
+% --------------------------------------------------------------------------------------------------
+% Numerical example: Very Simple Ecosystem Model (VSEM)
+% --------------------------------------------------------------------------------------------------
+
+\newcommand{\stateV}{\state_{\textrm{v}}}
+\newcommand{\stateR}{\state_{\textrm{r}}}
+\newcommand{\stateS}{\state_{\textrm{s}}}
+\newcommand{\dstateV}{\dot{\state}_{\textrm{v}}}
+\newcommand{\dstateR}{\dot{\state}_{\textrm{r}}}
+\newcommand{\dstateS}{\dot{\state}_{\textrm{s}}}
+\newcommand{\NPP}{\textrm{NPP}}
+\newcommand{\GPP}{\textrm{GPP}}
+\newcommand{\alphaV}{\alpha_{\textrm{v}}}
+\newcommand{\tauV}{\tau_{\textrm{v}}}
+\newcommand{\tauR}{\tau_{\textrm{r}}}
+\newcommand{\tauS}{\tau_{\textrm{s}}}
+\newcommand{\LUE}{\ell}
+\newcommand{\LAR}{r}
+\newcommand{\KEXT}{\kappa}
+\newcommand{\fracRespiration}{\gamma}
+\newcommand{\LAI}{\textrm{LAI}}
+
+
+
+
+
+
+
+

@@ -1,0 +1,186 @@
+---
+title: "inv_prob_summary"
+output: html_document
+---
+
+```{r}
+set.seed(543653)
+
+library(data.table)
+library(ggplot2)
+library(patchwork)
+library(scales)
+library(grid)
+library(support)
+
+experiment_tag <- "vsem"
+write_plots <- TRUE
+
+base_dir <- file.path("/projectnb", "dietzelab", "arober", "bip-surrogates-paper")
+code_dir <- file.path("/projectnb", "dietzelab", "arober", "gp-calibration")
+src_dir <- file.path(code_dir, "src")
+experiment_dir <- file.path(base_dir, "experiments", experiment_tag)
+out_dir <- file.path(experiment_dir, "output", "inv_prob_setup")
+alg_settings_dir <- file.path(experiment_dir, "output", "alg_settings")
+plt_dir <- file.path(out_dir, "plots")
+
+# Source required files.
+source(file.path(src_dir, "general_helper_functions.r"))
+source(file.path(src_dir, "statistical_helper_functions.r"))
+source(file.path(src_dir, "inv_prob_test_functions.r"))
+source(file.path(src_dir, "plotting_helper_functions.r"))
+source(file.path(src_dir, "mcmc_helper_functions.r"))
+source(file.path(src_dir, "seq_design.r"))
+source(file.path(src_dir, "gp_helper_functions.r"))
+source(file.path(src_dir, "gpWrapper.r"))
+source(file.path(src_dir, "llikEmulator.r"))
+source(file.path(base_dir, "scripts", "helper", "sim_study_functions.r"))
+source(file.path(base_dir, "..", "sipnet_calibration", "src", "prob_dists.r"))
+source(file.path(base_dir, "..", "sipnet_calibration", "src", "eki_pecan.r"))
+```
+
+# MCMC Diagnostics
+```{r}
+# Read data/plots saved to file.
+samp_dt <- fread(file.path(out_dir, "samp_exact.csv"))
+samp_dt_prior <- fread(file.path(out_dir, "prior_samp.csv"))
+inv_prob <- readRDS(file.path(out_dir, "inv_prob_list.rds"))
+test_info_prior <- readRDS(file.path(out_dir, "test_info_prior.rds"))
+test_info_post <- readRDS(file.path(out_dir, "test_info_post.rds"))
+em_settings <- readRDS(file.path(alg_settings_dir, "em_settings.rds"))
+
+par_prior <- inv_prob$par_prior
+llik_obj <- inv_prob$llik_obj
+output_names <- inv_prob$output_names
+par_names <- inv_prob$par_names
+
+# Output variable info.
+output_name <- "LAI"
+output_idx <- inv_prob$output_idx
+
+# Determines quantiles that will be used for credible intervals.
+p_upper <- 0.95
+p_lower <- 0.05
+```
+
+```{r}
+# Prior parameter samples and prior predictive.
+n_ens <- 1000L
+design_prior <- get_init_design_list(inv_prob, design_method="simple", 
+                                     N_design=n_ens)
+design_prior$states <- inv_prob$par_to_output_map(design_prior$input)
+design_prior$output_state <- design_prior$states[,,inv_prob$output_idx]
+```
+
+```{r}
+# Posterior parameter samples and posterior predictive. 
+samp_post <- select_mcmc_samp_mat(samp_dt, thin=10L)
+
+design_post <- get_init_design_list(inv_prob, inputs=samp_post, design_method=NULL, 
+                                    N_design=NULL)
+design_post$states <- inv_prob$par_to_output_map(design_post$input)
+design_post$output_state <- design_post$states[,,inv_prob$output_idx]
+```
+
+# Prior/posterior distributions
+```{r}
+samp_dt_comb <- combine_samp_dt(samp_dt, samp_dt_prior)
+samp_dt_comb[test_label=="exact", test_label := "posterior"]
+prior_post_plots <- get_1d_kde_plots(samp_dt_comb, bandwidth_mult=1.5, line_thickness=2.0)
+
+for(i in seq_along(prior_post_plots)) {
+  plt <- ggformat_journal(prior_post_plots[[i]], remove_title=TRUE, 
+                          legend_position="none") + labs(y="density")
+  
+  if(i == length(prior_post_plots)) {
+    plt <- plt + theme(legend.position=c(1, 1),
+                       legend.justification=c(1, 1))
+  }
+
+  plt_name <- names(prior_post_plots)[i]
+  plot(plt)
+  
+  if(write_plots) {
+    ggsave(file.path(plt_dir, paste0("prior_post_", plt_name, ".png")), plt)
+  }
+}
+```
+
+# Prior/posterior predictive distributions
+
+```{r}
+
+plot_ens_output <- function(inv_prob, design_list, n_traj) {
+  # Helper function for summarizing model outputs.
+  
+  # Trajectories (over all time steps)
+  n_ens <- dim(design_list$output_state)[1]
+  idcs_traj_output <- sample(n_ens, size=n_traj)
+  dt_traj_output <- as.data.table(t(design_list$output_state[idcs_traj_output,,drop=FALSE]))
+  colnames(dt_traj_output) <- paste0("traj", 1:ncol(dt_traj_output))
+  dt_traj_output[, t := inv_prob$time_points]
+  dt_traj_output <- melt(dt_traj_output, id.vars="t", 
+                         variable.name="trajectory", value.name="value")
+  
+  # Upper and lower quantiles over prior predictive ensemble.
+  q_upper_output<- apply(design_list$output_state, 2, function(x) quantile(x, p_upper))
+  q_lower_output <- apply(design_list$output_state, 2, function(x) quantile(x, p_lower))
+  dt_interval_output <- data.table(t=inv_prob$time_points, lower=q_lower_output, upper=q_upper_output,
+                                   ground_truth=drop(inv_prob$model_output_true[,,output_idx]))
+  
+  # Observable data (monthly averages). Plot at the midpoint of each month.
+  t_monthly <- seq(from=15, by=30, length.out=inv_prob$dim_obs)
+  dt_obs <- data.table(y=drop(inv_prob$y), y_true=drop(inv_prob$y_true),
+                       t=t_monthly)
+  sd_obs_model <- sqrt(inv_prob$sig2_model)
+  
+  # Plot. 
+  plt_fwd <- ggplot() +
+              geom_ribbon(aes(x=t, ymin=lower, ymax=upper), dt_interval_output, 
+                          fill="skyblue", alpha=0.2) +
+              geom_line(aes(x=t, y=ground_truth), dt_interval_output, color="black") +
+              geom_errorbar(aes(x=t, ymin=y-sd_obs_model, ymax=y+sd_obs_model), dt_obs, color="black") + 
+              geom_line(aes(x=t, y=value, group=trajectory), dt_traj_output, color="grey", alpha=0.7) +
+              geom_point(aes(x=t, y=y), dt_obs, color="red") +
+              labs(x="days", y=output_name)
+
+  return(plt_fwd)
+}
+```
+
+
+```{r}
+plt_output_prior <- plot_ens_output(inv_prob, design_prior, n_traj=10L)
+plt_output_post <- plot_ens_output(inv_prob, design_post, n_traj=10L)
+
+plot(plt_output_prior)
+plot(plt_output_post)
+```
+
+```{r}
+# Save plots.
+lims_ens_plots <- get_common_lims(plt_output_prior, plt_output_post)
+
+plt_output_prior <- ggformat_journal(plt_output_prior, xlim=lims_ens_plots$xlim,
+                                     ylim=lims_ens_plots$ylim)
+plt_output_post <- ggformat_journal(plt_output_post, xlim=lims_ens_plots$xlim,
+                                    ylim=lims_ens_plots$ylim)
+
+plot(plt_output_prior)
+plot(plt_output_post)
+
+if(write_plots) {
+  ggsave(file.path(plt_dir, "prior_pred_dist.png"), plt_output_prior)
+  ggsave(file.path(plt_dir, "post_pred_dist.png"), plt_output_post)
+}
+```
+
+
+
+
+
+
+
+
+
+

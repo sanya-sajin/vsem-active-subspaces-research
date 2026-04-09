@@ -1,0 +1,194 @@
+---
+title: "Testing Log-Density Emulators for VSEM Inverse Problem"
+output: html_document
+---
+
+```{r}
+set.seed(543653)
+
+library(data.table)
+library(ggplot2)
+library(patchwork)
+library(scales)
+library(grid)
+library(support)
+
+experiment_tag <- "vsem"
+write_plots <- FALSE
+
+# base_dir <- file.path("/Users/andrewroberts/Desktop/git-repos/bip-surrogates-paper")
+# code_dir <- file.path("/Users/andrewroberts/Desktop/git-repos/gp-calibration")
+base_dir <- file.path("/projectnb", "dietzelab", "arober", "bip-surrogates-paper")
+code_dir <- file.path("/projectnb", "dietzelab", "arober", "gp-calibration")
+pecan_dir <- file.path(base_dir, "..", "sipnet_calibration", "src")
+src_dir <- file.path(code_dir, "src")
+experiment_dir <- file.path(base_dir, "experiments", experiment_tag)
+out_dir <- file.path(experiment_dir, "output", "inv_prob_setup")
+alg_settings_dir <- file.path(experiment_dir, "output", "alg_settings")
+plt_dir <- file.path(out_dir, "plots")
+
+# Source required files.
+source(file.path(src_dir, "general_helper_functions.r"))
+source(file.path(src_dir, "statistical_helper_functions.r"))
+source(file.path(src_dir, "inv_prob_test_functions.r"))
+source(file.path(src_dir, "plotting_helper_functions.r"))
+source(file.path(src_dir, "mcmc_helper_functions.r"))
+source(file.path(src_dir, "seq_design.r"))
+source(file.path(src_dir, "gp_helper_functions.r"))
+source(file.path(src_dir, "gp_mcmc_functions.r"))
+source(file.path(src_dir, "gpWrapper.r"))
+source(file.path(src_dir, "llikEmulator.r"))
+source(file.path(src_dir, "seq_design.r"))
+source(file.path(src_dir, "seq_design_gp.r"))
+source(file.path(src_dir, "seq_design_for_post_approx.r"))
+source(file.path(base_dir, "scripts", "helper", "sim_study_functions.r"))
+source(file.path(pecan_dir, "prob_dists.r"))
+source(file.path(pecan_dir, "eki_pecan.r"))
+```
+
+```{r}
+# Read data/plots saved to file.
+samp_dt <- fread(file.path(out_dir, "samp_exact.csv"))
+samp_dt_prior <- fread(file.path(out_dir, "prior_samp.csv"))
+inv_prob <- readRDS(file.path(out_dir, "inv_prob_list.rds"))
+test_info_prior <- readRDS(file.path(out_dir, "test_info_prior.rds"))
+test_info_post <- readRDS(file.path(out_dir, "test_info_post.rds"))
+em_settings <- readRDS(file.path(alg_settings_dir, "em_settings.rds"))
+```
+
+```{r}
+# Read llikEmulator
+lpost_em <- readRDS(file.path(experiment_dir, "output", "round1", "em", 
+                              "em_lpost_twostage", "lhs_extrap_30", "design_10",
+                              "em_10", "em_llik.rds"))
+
+```
+
+```{r}
+# Predictions at prior and posterior points.
+lpost_scatter_prior <- lpost_em$plot_pred_validation(test_info_prior$input, 
+                                                     adjustment="rectified",
+                                                     true_llik=test_info_prior$lpost, 
+                                                     interval_method="CI", CI_prob=0.9)
+lpost_scatter_post <- lpost_em$plot_pred_validation(test_info_post$input,
+                                                    adjustment="rectified",
+                                                    true_llik=test_info_post$lpost, 
+                                                    interval_method="CI", CI_prob=0.9)
+
+# Format plots.
+lpost_scatter_prior <- ggformat_journal(lpost_scatter_prior, remove_title=TRUE)
+lpost_scatter_post <- ggformat_journal(lpost_scatter_post, remove_title=TRUE)
+
+plot(lpost_scatter_prior)
+plot(lpost_scatter_post)
+```
+
+```{r}
+n_itr <- 50
+llik <- function(U) inv_prob$llik_obj$assemble_llik(U)
+lpost <- function(U) llik(U) + calc_lprior_dens(U, inv_prob$par_prior)
+lprior_trunc <- function(U) calc_lprior_dens(U, inv_prob$par_prior_trunc)
+
+lpost_em_1 <- lpost_em$copy()
+lpost_em_2 <- lpost_em$copy()
+lpost_em_3 <- lpost_em$copy()
+
+update_em_1 <- function(em) {
+  u <- sample_prior(inv_prob$par_prior_trunc, n=1L)
+  res_u <- llik(u) - em$shift_func(u) + lprior_trunc(u)
+  em$update_emulator(u, res_u)
+  return(em)
+}
+
+update_em_2 <- function(em) {
+  u <- sample_prior(inv_prob$par_prior_trunc, n=1L)
+  res_u <- llik(u) - em$shift_func(u) + lprior_trunc(u)
+  em$update_emulator(u, res_u, update_hyperpar=TRUE)
+  return(em)
+  
+  # design_new <- get_init_design_list(inv_prob, "", NA, 
+  #                                    inputs=rbind(em$get_design_inputs(), u))
+  # em_settings$em_lpost_twostage$fit_em(design_new, inv_prob)
+}
+
+update_em_3 <- function(em) {
+  grid <- sample_prior(inv_prob$par_prior_trunc, n=1000L)
+  log_var <- em$predict_lik(grid, log_scale=TRUE,
+                            adjustment="none")$log_var
+  idx <- which.max(log_var)
+  u <- grid[idx,,drop=FALSE]
+  
+  res_u <- llik(u) - em$shift_func(u) + lprior_trunc(u)
+  em$update_emulator(u, res_u, update_hyperpar=FALSE)
+  return(em)
+  
+  # design_new <- get_init_design_list(inv_prob, "", NA, 
+  #                                    inputs=rbind(em$get_design_inputs(), u))
+  # em_settings$em_lpost_twostage$fit_em(design_new, inv_prob)
+}
+
+dt <- data.table(err1_prior = numeric(n_itr),
+                 err1_post = numeric(n_itr),
+                 err2_prior = numeric(n_itr),
+                 err2_post = numeric(n_itr),
+                 err3_prior = numeric(n_itr),
+                 err3_post = numeric(n_itr))
+
+eval_em <- function(em) {
+  prior_mean <- drop(em$predict(test_info_prior$input, adjustment="rectified")$mean)
+  post_mean <- drop(em$predict(test_info_post$input, adjustment="rectified")$mean)
+  
+  prior_err <- mean(abs(prior_mean - test_info_prior$lpost))
+  post_err <- mean(abs(post_mean - test_info_post$lpost))
+  
+  return(list(prior=prior_err, post=post_err))
+}
+
+for(i in 1:n_itr) {
+  
+  print(i)
+  
+  lpost_em_1 <- update_em_1(lpost_em_1)
+  lpost_em_2 <- update_em_2(lpost_em_2)
+  lpost_em_3 <- update_em_3(lpost_em_3)
+  
+  result1 <- eval_em(lpost_em_1)
+  result2 <- eval_em(lpost_em_2)
+  result3 <- eval_em(lpost_em_3)
+  
+  dt[i, `:=`(err1_prior=result1$prior, err1_post=result1$post,
+             err2_prior=result2$prior, err2_post=result2$post,
+             err3_prior=result3$prior, err3_post=result3$post)]
+}
+
+```
+
+```{r}
+dt$itr <- 1:nrow(dt)
+
+plt_prior <- ggplot(dt, aes(x=itr)) +
+              geom_line(aes(y=err1_prior), color="blue") + 
+              geom_line(aes(y=err2_prior), color="green") + 
+              geom_line(aes(y=err3_prior), color="red")
+
+plt_post <- ggplot(dt, aes(x=itr)) +
+              geom_line(aes(y=err1_post), color="blue") + 
+              geom_line(aes(y=err2_post), color="green") + 
+              geom_line(aes(y=err3_post), color="red")
+
+plot(plt_prior)
+plot(plt_post)
+```
+
+```{r}
+plot(3:100, lpost_em_3$get_design_llik()[33:130])
+```
+
+
+
+
+
+
+
+
+

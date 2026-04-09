@@ -1,0 +1,37 @@
+output/
+out/
+*.png
+*.pdf
+*.o*
+
+## Latex auxiliary files.
+*.aux
+*.lof
+papers/*/*.log
+papers/*/*.out
+*.lot
+*.toc
+*.bbl
+*.blg
+*.gz
+
+## Python
+**/__pycache__/
+*.py[cod]
+
+## R
+.Rapp.history
+
+
+## Plots directory
+figures/
+
+## vscode
+*.vscode
+
+## Jupyter
+**.ipynb_checkpoints**
+
+## Python packaging
+*.egg-info/
+

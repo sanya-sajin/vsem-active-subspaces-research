@@ -1,0 +1,810 @@
+---
+title: "toy_1d_example"
+output: html_document
+  mathjax: default
+---
+
+```{r}
+set.seed(75473346)
+
+library(data.table)
+library(latex2exp)
+library(ggplot2)
+library(patchwork)
+library(scales)
+library(grid)
+library(support)
+
+# base_dir <- file.path("/Users/andrewroberts/Desktop/git-repos/bip-surrogates-paper")
+# code_dir <- file.path("/Users/andrewroberts/Desktop/git-repos/gp-calibration")
+
+base_dir <- file.path("/projectnb", "dietzelab", "arober", "bip-surrogates-paper")
+code_dir <- file.path("/projectnb", "dietzelab", "arober", "gp-calibration")
+src_dir <- file.path(code_dir, "src")
+
+# Source required files.
+source(file.path(src_dir, "general_helper_functions.r"))
+source(file.path(src_dir, "statistical_helper_functions.r"))
+source(file.path(src_dir, "plotting_helper_functions.r"))
+source(file.path(src_dir, "mcmc_helper_functions.r"))
+source(file.path(src_dir, "seq_design.r"))
+source(file.path(src_dir, "gp_helper_functions.r"))
+source(file.path(src_dir, "gp_mcmc_functions.r"))
+source(file.path(src_dir, "gpWrapper.r"))
+source(file.path(src_dir, "llikEmulator.r"))
+source(file.path(src_dir, "seq_design.r"))
+source(file.path(src_dir, "seq_design_gp.r"))
+source(file.path(src_dir, "seq_design_for_post_approx.r"))
+source(file.path(base_dir, "scripts", "helper", "sim_study_functions.r"))
+
+# Number of Monte Carlo samples used to approximate expected posterior approximation.
+n_MC_EP <- 100000L
+
+# Plot Settings.
+CI_prob <- 0.9
+design_pt_size <- 7
+line_thickness <- 2.0
+design_color <- "red"
+
+x_lab <- "u"
+y_lab_fwd <- latex2exp::TeX("$G(u)$")
+y_lab_llik <- latex2exp::TeX("$L(u)$")
+y_lab_lik <- latex2exp::TeX("$\\exp[L(u)]$")
+y_lab_lpost <- latex2exp::TeX("$L^{\\pi}(u)$")
+y_lab_post <- latex2exp::TeX("$\\pi(u)$")
+y_lab_post_norm <- latex2exp::TeX("$\\bar{\\pi}(u)$")
+
+update_geom_defaults("line", list(linewidth=line_thickness))
+update_geom_defaults("point", list(size=design_pt_size, color=design_color))
+
+# Settings for saving plots.
+save_output <- FALSE
+output_dir <- file.path(base_dir, "output", "plots", "toy_1d")
+
+dir.create(output_dir, recursive=TRUE)
+```
+
+# Inverse problem setup
+Forward model, log-likelihood, log-prior, log-unnormalized posterior density.
+```{r}
+# Forward model: average of exponential at a grid of discrete points.
+# Vectorized so `u` can be a vector of different parameter values.
+time_grid <- seq(0, 1, length.out=20)
+dt <- time_grid[2] - time_grid[1]
+fwd_single_input <- function(u) dt * sum(diff(exp(u*time_grid)))
+fwd <- function(u) sapply(u, fwd_single_input)
+  
+# True parameter and observation.
+u_true <- 1.0
+sig <- 0.1
+y_obs <- rnorm(1, mean=fwd(u_true), sd=sig)
+
+# Gaussian likelihood. Shift by a constant to avoid large numbers on 
+# exponential scale. Also define a version of the likelihood that is 
+# parameterized in terms of the forward model output.
+llik_1 <- function(u) dnorm(y_obs, mean=fwd(u), sd=sig, log=TRUE)
+shift <- max(llik_1(seq(-8, 8, length.out=200)))
+llik <- function(u) llik_1(u) - shift
+llik_fwd <- function(G) dnorm(y_obs, mean=G, sd=sig, log=TRUE) - shift
+
+# Gaussian prior.
+prior_mean <- 0
+prior_sd <- 1.0
+lprior <- function(u) dnorm(u, mean=prior_mean, sd=prior_sd, log=TRUE)
+
+# Unnormalized log posterior.
+lpost <- function(u) lprior(u) + llik(u)
+```
+
+# Grid for plotting.
+```{r}
+n_grid <- 200L
+grid_min <- qnorm(0.005, mean=prior_mean, sd=prior_sd)
+grid_max <- -grid_min
+
+grid_info <- list(input = seq(grid_min, grid_max, length.out=n_grid))
+grid_info$fwd <- fwd(grid_info$input)
+grid_info$llik <- llik(grid_info$input)
+grid_info$lprior <- lprior(grid_info$input)
+grid_info$lpost <- lpost(grid_info$input)
+
+grid_info_dt <- as.data.table(grid_info)
+input_grid <- matrix(grid_info_dt$input, ncol=1L)
+lprior_grid <- lprior(grid_info$input)
+```
+
+```{r}
+plt_fwd <- ggplot() +
+              geom_line(aes(x=input, y=fwd), grid_info_dt, color="black") +
+              geom_hline(yintercept=y_obs, color="orange")
+
+plt_lprior <- ggplot() +
+              geom_line(aes(x=input, y=lprior), grid_info_dt, color="red")
+
+plt_ldens <- ggplot() +
+              geom_line(aes(x=input, y=lprior), grid_info_dt, color="red") +
+              geom_line(aes(x=input, y=lpost), grid_info_dt, color="green") +
+              geom_line(aes(x=input, y=llik), grid_info_dt, color="blue")
+
+plt_dens <- ggplot() +
+              geom_line(aes(x=input, y=exp(lprior)), grid_info_dt, color="red") +
+              geom_line(aes(x=input, y=exp(lpost)), grid_info_dt, color="green") +
+              geom_line(aes(x=input, y=exp(llik)), grid_info_dt, color="blue")
+
+plot(plt_fwd)
+plot(plt_lprior)
+plot(plt_ldens)
+plot(plt_dens)
+```
+# Initial Design
+
+```{r}
+n_design <- 3L
+q <- qnorm(.95, mean=prior_mean, sd=prior_sd)
+design <- list(input = seq(-q, q, length.out=n_design))
+design$fwd <- fwd(design$input)
+design$llik <- llik(design$input)
+design$lprior <- lprior(design$input)
+design$lpost <- lpost(design$input)
+design_dt <- as.data.table(design)
+```
+
+```{r}
+# Plot bounds (may differ from grid bounds if we want to trim off a bit of 
+# the tails).
+plt_bounds <- c(grid_min, grid_max)
+```
+
+# Fit emulators
+
+```{r}
+# Forward model emulator for figure 1: stationary GP.
+fit_em_fwd_1 <- function(design) {
+  # Fit GP to forward model.
+  gp <- gpWrapperHet(matrix(design$input, ncol=1L), 
+                     matrix(design$fwd, ncol=1L),
+                     scale_input=TRUE, normalize_output=TRUE)
+  gp$set_gp_prior("Gaussian", "constant", include_noise=FALSE)
+  gp$fit()
+  
+  # Create llikEmulator object.
+  llikEmulatorGPFwdGaussDiag("fwd", gp, y_obs=matrix(y_obs), sig2=sig^2, 
+                             default_conditional=FALSE,
+                             default_normalize=TRUE,
+                             shift_func = function(...) -shift)
+}
+
+# Log-likelihood emulator for figure 1: stationary GP.
+fit_em_llik_1 <- function(design) {
+  # Fit GP to log-likelihood.
+  gp <- gpWrapperHet(matrix(design$input, ncol=1L), 
+                     matrix(design$llik, ncol=1L),
+                     scale_input=TRUE, normalize_output=TRUE)
+  gp$set_gp_prior("Gaussian", "constant", include_noise=FALSE)
+  gp$fit()
+  
+  # Create llikEmulator object.
+  llikEmulatorGP("llik", gp, default_conditional=FALSE, 
+                 default_normalize=TRUE)
+}
+
+# Log-posterior emulator for figure 1: stationary GP.
+fit_em_lpost_1 <- function(design) {
+  # Fit GP to log-posterior.
+  gp <- gpWrapperHet(matrix(design$input, ncol=1L), 
+                     matrix(design$lpost, ncol=1L),
+                     scale_input=TRUE, normalize_output=TRUE)
+  gp$set_gp_prior("Gaussian", "constant", include_noise=FALSE)
+  gp$fit()
+  
+  # Create llikEmulator object.
+  llikEmulatorGP("lpost", gp, default_conditional=FALSE, 
+                 default_normalize=TRUE)
+}
+```
+
+```{r}
+# Fit emulators.
+em_fwd <- fit_em_fwd_1(design)
+em_llik <- fit_em_llik_1(design)
+em_lpost <- fit_em_lpost_1(design)
+```
+
+```{r}
+# Forward model emulator predictions. Note that we need to adjust the predictions
+# from `llikEmulatorFwdGaussDiag` to account for the log-likelihood shift 
+# applied above.
+pred_dt_fwd <- copy(grid_info_dt)
+pred_em_fwd <- em_fwd$predict_emulator(input_grid)
+pred_llik_fwd <- em_fwd$predict(input_grid, em_pred_list=pred_em_fwd)
+pred_lik_fwd <- em_fwd$predict_lik(input_grid, em_pred_list=pred_em_fwd, log_scale=TRUE)
+
+pred_dt_fwd[, `:=`(em_mean=drop(pred_em_fwd$mean), 
+                   em_sd=sqrt(drop(pred_em_fwd$var)),
+                   llik_mean=pred_llik_fwd$mean,
+                   llik_sd=sqrt(pred_llik_fwd$var),
+                   lik_mean=pred_lik_fwd$log_mean,
+                   lik_sd=0.5 * pred_lik_fwd$log_var)]
+
+# Adjust by prior to obtain lpost and post predictions.
+pred_dt_fwd[, `:=`(lpost_mean=llik_mean + lprior_grid,
+                   lpost_sd=llik_sd,
+                   post_mean=lik_mean + lprior_grid,
+                   post_sd=lik_sd + 2*lprior_grid)]
+```
+
+
+```{r}
+# Log-likelihood emulator predictions.
+pred_dt_llik <- copy(grid_info_dt)
+pred_llik_llik <- em_llik$predict(input_grid)
+pred_lik_llik <- em_llik$predict_lik(input_grid, log_scale=TRUE)
+
+pred_dt_llik[, `:=`(llik_mean=pred_llik_llik$mean,
+                    llik_sd=sqrt(pred_llik_llik$var),
+                    lik_mean=pred_lik_llik$log_mean,
+                    lik_sd=0.5 * pred_lik_llik$log_var)]
+
+# Adjust by prior to obtain lpost and post predictions.
+pred_dt_llik[, `:=`(lpost_mean=llik_mean + lprior_grid,
+                    lpost_sd=llik_sd,
+                    post_mean=lik_mean + lprior_grid,
+                    post_sd=lik_sd + 2*lprior_grid)]
+```
+
+## Compute credible intervals
+
+```{r}
+# Upper and lower quantiles.
+q_upper <- 1 - 0.5*(1-CI_prob)
+q_lower <- 0.5 * (1-CI_prob)
+```
+
+```{r}
+# Log-likelihood emulator credible intervals are all computable in closed-form.
+pred_dt_llik[, `:=`(llik_upper=qnorm(q_upper, llik_mean, llik_sd),
+                    llik_lower=qnorm(q_lower, llik_mean, llik_sd),
+                    lik_upper=qlnorm(q_upper, llik_mean, llik_sd),
+                    lik_lower=qlnorm(q_lower, llik_mean, llik_sd),
+                    lpost_upper=qnorm(q_upper, lpost_mean, lpost_sd),
+                    lpost_lower=qnorm(q_lower, lpost_mean, lpost_sd),
+                    post_upper=qlnorm(q_upper, lpost_mean, lpost_sd),
+                    post_lower=qlnorm(q_lower, lpost_mean, lpost_sd))]
+```
+
+```{r}
+# Forward model quantiles require Monte Carlo estimation.
+
+# Forward model intervals.
+fwd_em_samp <- em_fwd$sample_emulator(input=input_grid, N_samp=1e5, use_cov=FALSE)
+fwd_em_samp <- t(fwd_em_samp[,,1])
+pred_dt_fwd$em_upper <- apply(fwd_em_samp, 2, quantile, probs=q_upper)
+pred_dt_fwd$em_lower <- apply(fwd_em_samp, 2, quantile, probs=q_lower)
+
+# Log-likelihood intervals.
+llik_samp_fwd <- llik_fwd(fwd_em_samp)
+pred_dt_fwd$llik_upper <- apply(llik_samp_fwd, 2, quantile, probs=q_upper)
+pred_dt_fwd$llik_lower <- apply(llik_samp_fwd, 2, quantile, probs=q_lower)
+
+# Likelihood intervals.
+pred_dt_fwd$lik_lower <- apply(exp(llik_samp_fwd), 2, quantile, probs=q_lower)
+pred_dt_fwd$lik_upper <- apply(exp(llik_samp_fwd), 2, quantile, probs=q_upper)
+
+# Log-posterior intervals.
+lpost_samp_fwd <- add_vec_to_mat_rows(pred_dt_fwd$lprior, llik_samp_fwd)
+pred_dt_fwd$lpost_lower <- apply(lpost_samp_fwd, 2, quantile, probs=q_lower)
+pred_dt_fwd$lpost_upper <- apply(lpost_samp_fwd, 2, quantile, probs=q_upper)
+
+# Posterior intervals.
+pred_dt_fwd$post_lower <- apply(exp(lpost_samp_fwd), 2, quantile, probs=q_lower)
+pred_dt_fwd$post_upper <- apply(exp(lpost_samp_fwd), 2, quantile, probs=q_upper)
+```
+
+
+# Induced Surrogate Distribution Plots
+
+```{r}
+# Forward model emulation plots.
+plt_fwd <- ggplot(pred_dt_fwd, aes(x=input)) +
+               geom_line(aes(y=fwd), color="black") +
+               geom_line(aes(y=em_mean), color="blue") +
+               geom_ribbon(aes(ymin=em_lower, ymax=em_upper), 
+                           fill="skyblue", alpha=0.4) +
+               geom_point(aes(x=input, y=fwd), design_dt, color="red") + 
+               labs(x=x_lab, y=y_lab_fwd)
+
+plt_llik_fwd <- ggplot(pred_dt_fwd, aes(x=input)) +
+                 geom_line(aes(y=llik), color="black") +
+                 geom_line(aes(y=llik_mean), color="blue") +
+                 geom_ribbon(aes(ymin=llik_lower, ymax=llik_upper), 
+                             fill="skyblue", alpha=0.4) +
+                 geom_point(aes(x=input, y=llik), design_dt, color="red") +
+                 labs(x=x_lab, y=y_lab_llik)
+
+plt_lpost_fwd <- ggplot(pred_dt_fwd, aes(x=input)) +
+                 geom_line(aes(y=lpost), color="black") +
+                 geom_line(aes(y=lpost_mean), color="blue") +
+                 geom_ribbon(aes(ymin=lpost_lower, ymax=lpost_upper), 
+                             fill="skyblue", alpha=0.4) +
+                 geom_point(aes(x=input, y=lpost), design_dt, color="red") + 
+                 labs(x=x_lab, y=y_lab_lpost)
+
+plt_lik_fwd <- ggplot(pred_dt_fwd, aes(x=input)) +
+                 geom_line(aes(y=exp(llik)), color="black") +
+                 geom_line(aes(y=exp(lik_mean)), color="blue") +
+                 geom_ribbon(aes(ymin=lik_lower, ymax=lik_upper), 
+                             fill="skyblue", alpha=0.4) +
+                 geom_point(aes(x=input, y=exp(llik)), design_dt, color="red") + 
+                 labs(x=x_lab, y=y_lab_lik)
+
+plt_post_fwd <- ggplot(pred_dt_fwd, aes(x=input)) +
+                 geom_line(aes(y=exp(lpost)), color="black") +
+                 geom_line(aes(y=exp(post_mean)), color="blue") +
+                 geom_ribbon(aes(ymin=post_lower, ymax=post_upper), 
+                             fill="skyblue", alpha=0.4) +
+                 geom_point(aes(x=input, y=exp(lpost)), design_dt, color="red") + 
+                 labs(x=x_lab, y=y_lab_post)
+
+plot(plt_fwd)
+plot(plt_llik_fwd)
+plot(plt_lpost_fwd)
+plot(plt_lik_fwd)
+plot(plt_post_fwd)
+```
+
+```{r}
+# Log-likelihood emulation plots.
+plt_llik_llik <- ggplot(pred_dt_llik, aes(x=input)) +
+                     geom_line(aes(y=llik), color="black") +
+                     geom_line(aes(y=llik_mean), color="blue") +
+                     geom_ribbon(aes(ymin=llik_lower, ymax=llik_upper), 
+                                 fill="skyblue", alpha=0.4) +
+                     geom_point(aes(x=input, y=llik), design_dt, color="red") + 
+                     labs(x=x_lab, y=y_lab_llik)
+
+plt_lpost_llik <- ggplot(pred_dt_llik, aes(x=input)) +
+                   geom_line(aes(y=lpost), color="black") +
+                   geom_line(aes(y=lpost_mean), color="blue") +
+                   geom_ribbon(aes(ymin=lpost_lower, ymax=lpost_upper), 
+                               fill="skyblue", alpha=0.4) +
+                   geom_point(aes(x=input, y=lpost), design_dt, color="red") + 
+                   labs(x=x_lab, y=y_lab_lpost)
+
+plt_lik_llik <- ggplot(pred_dt_llik, aes(x=input)) +
+                   geom_line(aes(y=exp(llik)), color="black") +
+                   geom_line(aes(y=exp(lik_mean)), color="blue") +
+                   geom_ribbon(aes(ymin=lik_lower, ymax=lik_upper), 
+                               fill="skyblue", alpha=0.4) +
+                   geom_point(aes(x=input, y=exp(llik)), design_dt, color="red") + 
+                   labs(x=x_lab, y=y_lab_lik)
+
+plt_post_llik <- ggplot(pred_dt_llik, aes(x=input)) +
+                     geom_line(aes(y=exp(lpost)), color="black") +
+                     geom_line(aes(y=exp(post_mean)), color="blue") +
+                     geom_ribbon(aes(ymin=post_lower, ymax=post_upper), 
+                                 fill="skyblue", alpha=0.4) +
+                     geom_point(aes(x=input, y=exp(lpost)), design_dt, color="red") +
+                     labs(x=x_lab, y=y_lab_post)
+
+plot(plt_llik_llik)
+plot(plt_lpost_llik)
+plot(plt_lik_llik)
+plot(plt_post_llik)
+```
+
+```{r}
+#
+# Plot formatting and saving. 
+#
+
+# Align axes for plots. All plots will use `lims_llik$xlim` for the x-axis.
+lims_llik <- get_common_lims(plt_llik_fwd, plt_llik_llik)
+lims_lik <- get_common_lims(plt_lik_fwd, plt_lik_llik)
+lims_lpost <- get_common_lims(plt_lpost_fwd, plt_lpost_llik)
+lims_post <- get_common_lims(plt_post_fwd, plt_post_llik)
+
+# Forward model emulator.
+plt_fwd <- ggformat_journal(plt_fwd, xlim=lims_llik$xlim)
+
+# Log-likelihood emulators.
+plt_llik_fwd <- ggformat_journal(plt_llik_fwd, xlim=lims_llik$xlim,
+                                 ylim=lims_llik$ylim)
+plt_llik_llik <- ggformat_journal(plt_llik_llik, xlim=lims_llik$xlim,
+                                  ylim=lims_llik$ylim)
+
+# Likelihood emulators.
+plt_lik_fwd <- ggformat_journal(plt_lik_fwd, xlim=lims_llik$xlim,
+                                ylim=lims_lik$ylim)
+plt_lik_llik <- ggformat_journal(plt_lik_llik, xlim=lims_llik$xlim,
+                                 ylim=lims_lik$ylim)
+
+# Log-posterior emulators.
+plt_lpost_fwd <- ggformat_journal(plt_lpost_fwd, xlim=lims_llik$xlim,
+                                  ylim=lims_lpost$ylim)
+plt_lpost_llik <- ggformat_journal(plt_lpost_llik, xlim=lims_llik$xlim,
+                                   ylim=lims_lpost$ylim)
+
+# Posterior emulators.
+plt_post_fwd <- ggformat_journal(plt_post_fwd, xlim=lims_llik$xlim,
+                                 ylim=lims_post$ylim)
+plt_post_llik <- ggformat_journal(plt_post_llik, xlim=lims_llik$xlim,
+                                  ylim=lims_post$ylim)
+
+# Save plots.
+if(save_output) {
+  ggsave(file.path(output_dir, "fwd_dist_fwdem.png"), plt_fwd)
+  ggsave(file.path(output_dir, "llik_dist_llikem.png"), plt_llik_llik)
+  ggsave(file.path(output_dir, "llik_dist_fwdem.png"), plt_llik_fwd)
+  ggsave(file.path(output_dir, "lik_dist_llikem.png"), plt_lik_llik)
+  ggsave(file.path(output_dir, "lik_dist_fwdem.png"), plt_lik_fwd)
+  ggsave(file.path(output_dir, "lpost_dist_llikem.png"), plt_lpost_llik)
+  ggsave(file.path(output_dir, "lpost_dist_fwdem.png"), plt_lpost_fwd)
+  ggsave(file.path(output_dir, "post_dist_llikem.png"), plt_post_llik)
+  ggsave(file.path(output_dir, "post_dist_fwdem.png"), plt_post_fwd)
+}
+```
+
+
+# Posterior Approximation Plots
+
+```{r}
+# Induced likelihood approximations.
+
+# Foward model emulation.
+lik_approx_fwd <- em_fwd$calc_lik_approx(approx_type=c("mean", "marginal"), 
+                                         em_pred_list=pred_em_fwd, 
+                                         input=input_grid, log_scale=TRUE,
+                                         return_type="matrix")
+lik_approx_fwd_dt <- cbind(grid_info_dt, as.data.table(lik_approx_fwd))
+lik_approx_fwd_dt[,`:=`(mean=mean, marginal=marginal)]
+
+# Log-likelihood emulation.
+lik_approx_llik <- em_llik$calc_lik_approx(approx_type=c("mean", "marginal"), 
+                                           em_pred_list=pred_em_llik, 
+                                           input=input_grid, log_scale=TRUE,
+                                           return_type="matrix")
+lik_approx_llik_dt <- cbind(grid_info_dt, as.data.table(lik_approx_llik))
+```
+
+```{r}
+# Plot induced likelihood approximations.
+y_bounds_lik <- c(-5, 1.0)
+
+lik_approx_plt_fwd <- ggplot(lik_approx_fwd_dt, aes(x=input)) +
+                        geom_line(aes(y=llik), color="black") +
+                        geom_line(aes(y=mean), color="green") +
+                        geom_line(aes(y=marginal), color="blue") +
+                        geom_point(aes(x=input, y=llik), design_dt, color="red") +
+                        ggtitle("Forward model emulation") +
+                        labs(x=x_lab, y=y_lab_lik) +
+                        ylim(y_bounds_lik[1], y_bounds_lik[2])
+
+lik_approx_plt_llik <- ggplot(lik_approx_llik_dt, aes(x=input)) +
+                        geom_line(aes(y=llik), color="black") +
+                        geom_line(aes(y=mean), color="green") +
+                        geom_line(aes(y=marginal), color="blue") +
+                        geom_point(aes(x=input, y=llik), design_dt, color="red") + 
+                        ggtitle("Log-likelihood emulation") +
+                        labs(x=x_lab, y=y_lab_lik) + 
+                        ylim(y_bounds_lik[1], y_bounds_lik[2])
+
+plot(lik_approx_plt_fwd)
+plot(lik_approx_plt_llik)
+```
+
+```{r}
+# Induced (normalized) posterior approximations.
+du <- abs(grid_info_dt$input[2] - grid_info_dt$input[1])
+
+# Approximate normalizing constants.
+norm_cst_exact <- int_trap(exp(grid_info_dt$lpost), du)
+norm_cst_mean_fwd <- int_trap(exp(lik_approx_fwd_dt$mean + lik_approx_fwd_dt$lprior), du)
+norm_cst_marginal_fwd <- int_trap(exp(lik_approx_fwd_dt$marginal + lik_approx_fwd_dt$lprior), du)
+norm_cst_mean_llik <- int_trap(exp(lik_approx_llik_dt$mean + lik_approx_llik_dt$lprior), du)
+norm_cst_marginal_llik <- int_trap(exp(lik_approx_llik_dt$marginal + lik_approx_llik_dt$lprior), du)
+
+# Normalized posterior densities.
+lik_approx_fwd_dt[, `:=`(post_norm=exp(lpost)/norm_cst_exact,
+                         post_norm_mean=exp(mean+lprior)/norm_cst_mean_fwd,
+                         post_norm_marg=exp(marginal+lprior)/norm_cst_marginal_fwd)]
+lik_approx_llik_dt[, `:=`(post_norm=exp(lpost)/norm_cst_exact,
+                          post_norm_mean=exp(mean+lprior)/norm_cst_mean_llik,
+                          post_norm_marg=exp(marginal+lprior)/norm_cst_marginal_llik)]
+
+# Store normalized density evaluated at design points as well.
+design_dt[, post_norm := exp(lpost) / norm_cst_exact]
+
+# Convert the llik data to long format to create plot legend.
+post_approx_llik_dt_long <- data.table::melt.data.table(lik_approx_llik_dt[, .(input, post_norm, 
+                                                                               post_norm_mean, 
+                                                                               post_norm_marg)],
+                                                        id.vars="input")
+post_approx_llik_dt_long[, variable := as.factor(variable)]
+```
+
+```{r}
+# Noisy MCMC posterior approximations.
+
+# Truncating prior based on grid bounds (bounds contain almost all prior mass).
+par_prior <- data.frame(dist="Truncated_Gaussian", param1=prior_mean, 
+                        param2=prior_sd, bound_lower=grid_min, bound_upper=grid_max)
+rownames(par_prior) <- "u"
+n_chains <- 4L
+ics <- get_batch_design("simple", N_batch=n_chains, prior_params=par_prior)
+
+# Common settings for all MCMC runs.
+common_settings <- list(mcmc_func_name="mcmc_noisy_llik", par_prior=par_prior, 
+                        par_init=ics, mode="mcwmh", n_itr=20000L, 
+                        n_chain=n_chains, itr_start=15000L, try_parallel=TRUE,
+                        cov_prop=matrix(0.5^2), log_scale_prop=0, 
+                        adapt_cov_prop=FALSE, adapt_scale_prop=FALSE)
+
+# mcwmh-joint [fwd]
+joint_fwd_settings <- common_settings
+joint_fwd_settings$llik_em <- em_fwd
+joint_fwd_settings$use_joint <- TRUE
+joint_fwd_settings$test_label <- "mcwmh-joint-fwd"
+joint_fwd_results <- do.call(run_mcmc_chains, joint_fwd_settings)
+
+# mcwmh-ind [fwd]
+ind_fwd_settings <- common_settings
+ind_fwd_settings$llik_em <- em_fwd
+ind_fwd_settings$use_joint <- FALSE
+ind_fwd_settings$test_label <- "mcwmh-ind-fwd"
+ind_fwd_results <- do.call(run_mcmc_chains, ind_fwd_settings)
+
+# mcwmh-joint [llik]
+joint_llik_settings <- common_settings
+joint_llik_settings$llik_em <- em_llik
+joint_llik_settings$use_joint <- TRUE
+joint_llik_settings$test_label <- "mcwmh-joint-llik"
+joint_llik_results <- do.call(run_mcmc_chains, joint_llik_settings)
+
+# mcwmh-ind [llik]
+ind_llik_settings <- common_settings
+ind_llik_settings$llik_em <- em_llik
+ind_llik_settings$use_joint <- FALSE
+ind_llik_settings$test_label <- "mcwmh-ind-llik"
+ind_llik_results <- do.call(run_mcmc_chains, ind_llik_settings)
+
+# Combine samples.
+noisy_mcmc_dt_fwd <- combine_samp_dt(joint_fwd_results$samp, ind_fwd_results$samp)
+noisy_mcmc_dt_llik <- combine_samp_dt(joint_llik_results$samp, ind_llik_results$samp)
+noisy_mcmc_dt <- combine_samp_dt(noisy_mcmc_dt_fwd, noisy_mcmc_dt_llik)
+
+fwrite(noisy_mcmc_dt, file.path(output_dir, "noisy_mcmc_dt.csv"))
+```
+
+```{r}
+# MCMC diagnostics.
+trace_plots <- get_trace_plots(noisy_mcmc_dt)
+hist_plots <- get_hist_plots(noisy_mcmc_dt)
+kde_plots <- get_1d_kde_plots(noisy_mcmc_dt)
+
+for(plt in trace_plots) plot(plt)
+for(plt in hist_plots) plot(plt)
+for(plt in kde_plots) plot(plt)
+```
+
+```{r}
+# Estimate expected posterior approximation.
+
+dens_EP_llik <- estimate_sample_based_density_1d_grid(em_llik, par_prior, input_grid, 
+                                                      N_monte_carlo=n_MC_EP)
+dens_EP_fwd <- estimate_sample_based_density_1d_grid(em_fwd, par_prior, input_grid, 
+                                                     N_monte_carlo=n_MC_EP)
+
+dt_EP <- data.table(input = drop(input_grid),
+                    em_llik = dens_EP_llik,
+                    em_fwd = dens_EP_fwd)
+fwrite(dt_EP, file.path(output_dir, "dt_EP.csv"))
+
+
+plot(drop(input_grid), dens_EP_llik, type="l")
+plot(drop(input_grid), dens_EP_fwd, type="l")
+```
+
+
+```{r}
+# Plot induced normalized posterior approximations.
+
+# Standardize names.
+noisy_mcmc_dt_fwd[test_label=="mcwmh-joint-fwd", test_label := "mcwmh-joint"]
+noisy_mcmc_dt_fwd[test_label=="mcwmh-ind-fwd", test_label := "mcwmh-ind"]
+noisy_mcmc_dt_llik[test_label=="mcwmh-joint-llik", test_label := "mcwmh-joint"]
+noisy_mcmc_dt_llik[test_label=="mcwmh-ind-llik", test_label := "mcwmh-ind"]
+
+# Okabe-Ito color palette
+color_map <- c(post_norm="black", post_norm_mean="#0072B2", post_norm_marg="#D55E00",
+               "mcwmh-joint"="#F0E442", "mcwmh-ind"="#009E73", EP="#CC79A7")
+label_map <- c(post_norm="exact", post_norm_mean="mean", EP="EP", 
+               post_norm_marg="EL", "mcwmh-joint"="mcwmh", "mcwmh-ind"="E-acc")
+
+post_approx_plt_fwd <- get_1d_kde_plots(noisy_mcmc_dt_fwd, line_thickness=line_thickness)[[1]] +
+                        geom_line(aes(x=input, y=post_norm, color="post_norm"), lik_approx_fwd_dt) +
+                        geom_line(aes(x=input, y=post_norm_mean, color="post_norm_mean"), lik_approx_fwd_dt) +
+                        geom_line(aes(x=input, y=post_norm_marg, color="post_norm_marg"), lik_approx_fwd_dt) +
+                        geom_line(aes(x=input, y=em_fwd, color="EP"), dt_EP) + 
+                        geom_point(aes(x=input, y=post_norm), design_dt, color="red") +
+                        scale_color_manual(name=NULL, values=color_map, labels=label_map,
+                                           breaks=names(label_map)) +
+                        labs(x=x_lab, y=y_lab_post_norm)
+
+post_approx_plt_llik <- get_1d_kde_plots(noisy_mcmc_dt_llik, line_thickness=line_thickness)[[1]] +
+                        geom_line(aes(x=input, y=post_norm, color="post_norm"), lik_approx_llik_dt) +
+                        geom_line(aes(x=input, y=post_norm_mean, color="post_norm_mean"), lik_approx_llik_dt) +
+                        geom_line(aes(x=input, y=post_norm_marg, color="post_norm_marg"), lik_approx_llik_dt) +
+                        geom_line(aes(x=input, y=em_llik, color="EP"), dt_EP) + 
+                        geom_point(aes(x=input, y=post_norm), design_dt, color="red") +
+                        scale_color_manual(name=NULL, values=color_map, labels=label_map,
+                                           breaks=names(label_map)) +
+                        labs(x=x_lab, y=y_lab_post_norm)
+
+plot(post_approx_plt_fwd)
+plot(post_approx_plt_llik)
+```
+
+```{r}
+# Save posterior approximation plots.
+
+lims_post_norm <- get_common_lims(post_approx_plt_fwd, post_approx_plt_llik)
+
+post_approx_plt_fwd <- ggformat_journal(post_approx_plt_fwd, 
+                                        xlim=lims_llik$xlim, 
+                                        ylim=lims_post_norm$ylim,
+                                        legend_position="none",
+                                        remove_title=TRUE)
+post_approx_plt_llik <- ggformat_journal(post_approx_plt_llik, 
+                                         xlim=lims_llik$xlim, 
+                                         ylim=lims_post_norm$ylim,
+                                         remove_title=TRUE,
+                                         legend_position=c(0.98, 0.98),
+                                         legend.justification=c("right", "top"),
+                                         legend.direction="vertical",
+                                         legend_size=27)
+
+# Re-save trimmed versions of lpost distribution plots, which will be displayed
+# next to posterior approximation plots in paper.
+lpost_bounds <- c(-10, 1)
+plt_lpost_llik_trim <- plt_lpost_llik + ylim(lpost_bounds[1], lpost_bounds[2])
+plt_lpost_fwd_trim <- plt_lpost_fwd + ylim(lpost_bounds[1], lpost_bounds[2])
+
+plot(post_approx_plt_fwd)
+plot(post_approx_plt_llik)
+plot(plt_lpost_llik_trim)
+plot(plt_lpost_fwd_trim)
+
+if(save_output) {
+  ggsave(file.path(output_dir, "post_norm_approx_fwdem.png"), post_approx_plt_fwd)
+  ggsave(file.path(output_dir, "post_norm_approx_llikem.png"), post_approx_plt_llik)
+  ggsave(file.path(output_dir, "lpost_dist_fwdem_trim.png"), plt_lpost_fwd_trim)
+  ggsave(file.path(output_dir, "lpost_dist_llikem_trim.png"), plt_lpost_llik_trim)
+}
+```
+
+
+# Acquisition Functions
+
+```{r}
+# Setting up acquisition function settings.
+
+# TODO: need to make sure entropy calc is being shifted.
+
+# Add design points to input grid to avoid misleading plots.
+input_grid <- rbind(input_grid, matrix(design_dt$input, ncol=1L))
+
+# Pointwise (single-point) acquisitions.
+model_list <- list(em_fwd=em_fwd, em_llik=em_llik)
+acq_pw <- c("llik_neg_var_gp", "llik_neg_entropy_gp", "llik_neg_var_lik",
+            "llik_neg_entropy_lik")
+colnames(input_grid) <- em_fwd$input_names
+
+# Information about acquisitions.
+acq_info <- list(
+  list(name="llik_neg_var_gp", class="pw", target="f", measure="var"),
+  list(name="llik_neg_entropy_gp", class="pw", target="f", measure="ent"),
+  list(name="llik_neg_var_lik", class="pw", target="pi", measure="var"),
+  list(name="llik_neg_entropy_lik", class="pw", target="pi", measure="ent")
+)
+
+acq_info <- data.table::rbindlist(acq_info)
+
+# Colors for acquisitions.
+acq_measure_colors <- c(ent="#0072B2", var="#009E73")
+
+# Shape integer used for optimum values.
+opt_shape <- 18L
+```
+
+
+```{r}
+# Single-point/pointwise criteria.
+acq_vals_pw <- compare_acq_funcs_by_model(input_grid, acq_pw, 
+                                          model_list=model_list,
+                                          return_list=FALSE, adjustment=NULL,
+                                          shift_func_new=lprior)
+acq_vals_pw$input <- rep(drop(input_grid), length(model_list))
+acq_vals_pw <- data.table::melt.data.table(acq_vals_pw, id.vars=c("model", "input"),
+                                           variable.name="acq", value.name="value")
+acq_vals_pw <- data.table::merge.data.table(acq_vals_pw, acq_info, by.x="acq",
+                                            by.y="name", all.x=TRUE)
+```
+
+```{r}
+# Scale acquisition values to be able to compare on the same plot.
+acq_vals_pw[, value := (value-min(value)) / (max(value)-min(value)), by=.(acq, model)]
+
+# Optimal values for each acquisition function.
+acq_opts_pw <- acq_vals_pw[, .SD[which.min(value)], by=.(acq, model)]
+```
+
+```{r}
+# Acquisition plots: single point acquisitions.
+
+# Pointwise, target: f [fwd]
+acq_vals_pw_fwd_f <- acq_vals_pw[(model=="em_fwd") & (target=="f")]
+acq_opts_pw_fwd_f <- acq_opts_pw[(model=="em_fwd") & (target=="f")]
+
+acq_plt_pw_fwd_f <- ggplot() +
+                      geom_line(aes(x=input, y=value, color=measure),
+                                acq_vals_pw_fwd_f) +
+                      geom_point(aes(x=input, y=value, color=measure), 
+                                 acq_opts_pw_fwd_f, shape=opt_shape) + 
+                      geom_vline(xintercept=design_dt$input, color="red") +
+                      scale_color_manual(name="measure", values=acq_measure_colors)
+
+# Pointwise, target: pi [fwd]
+acq_vals_pw_fwd_pi <- acq_vals_pw[(model=="em_fwd") & (target=="pi")]
+acq_opts_pw_fwd_pi <- acq_opts_pw[(model=="em_fwd") & (target=="pi")]
+
+acq_plt_pw_fwd_pi <- ggplot() +
+                      geom_line(aes(x=input, y=value, color=measure),
+                                acq_vals_pw_fwd_pi) +
+                      geom_point(aes(x=input, y=value, color=measure), 
+                                 acq_opts_pw_fwd_pi, shape=opt_shape) + 
+                      geom_vline(xintercept=design_dt$input, color="red") +
+                      scale_color_manual(name="measure", values=acq_measure_colors)
+
+# Pointwise, target: f [llik]
+acq_vals_pw_llik_f <- acq_vals_pw[(model=="em_llik") & (target=="f")]
+acq_opts_pw_llik_f <- acq_opts_pw[(model=="em_llik") & (target=="f")]
+
+acq_plt_pw_llik_f <- ggplot() +
+                      geom_line(aes(x=input, y=value, color=measure),
+                                acq_vals_pw_llik_f) +
+                      geom_point(aes(x=input, y=value, color=measure), 
+                                 acq_opts_pw_llik_f, shape=opt_shape) + 
+                      geom_vline(xintercept=design_dt$input, color="red") +
+                      scale_color_manual(name="measure", values=acq_measure_colors)
+
+# Pointwise, target: pi [llik]
+acq_vals_pw_llik_pi <- acq_vals_pw[(model=="em_llik") & (target=="pi")]
+acq_opts_pw_llik_pi <- acq_opts_pw[(model=="em_llik") & (target=="pi")]
+
+acq_plt_pw_llik_pi <- ggplot() +
+                      geom_line(aes(x=input, y=value, color=measure),
+                                acq_vals_pw_llik_pi) +
+                      geom_point(aes(x=input, y=value, color=measure), 
+                                 acq_opts_pw_llik_pi, shape=opt_shape) + 
+                      geom_vline(xintercept=design_dt$input, color="red") +
+                      scale_color_manual(name="measure", values=acq_measure_colors)
+
+plot(acq_plt_pw_fwd_f)
+plot(acq_plt_pw_fwd_pi)
+plot(acq_plt_pw_llik_f)
+plot(acq_plt_pw_llik_pi)  
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

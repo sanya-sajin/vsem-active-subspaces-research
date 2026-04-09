@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bip-surrogates-paper"
+version = "0.1.0"
+description = "Code for paper: Modular Uncertainty Propagation in Surrogate-Based Bayesian Inverse Problems"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+keywords = [
+  "surrogates", "emulators", "gaussian-processes", "bayesian", "inverse-problems",
+  "uncertainty-quantification", "modular-inference", "cut-inference"
+]
+authors = [{ name = "Andrew Roberts", email = "arober@bu.edu" }]
+dependencies = [
+  "jax>=0.5.0",
+  "jaxlib>=0.5.0",
+  "gpjax>=0.13.4",
+  "flax>=0.12.0",
+  "numpy>=2.0.0",
+  "matplotlib>=3.7.1",
+  "seaborn>=0.12.2",
+  "blackjax>=1.3",
+  "ott-jax>=0.6.0",
+  "ipykernel>=7.1.0",
+]
+
+[project.urls]
+Source = "https://github.com/arob5/Bayesian-inference-with-surrogates.git"
+
+[project.optional-dependencies]
+docs = [
+    "ipykernel>=7.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["uncprop*",]
+exclude = ["tests*", "docs*", "papers*", "experiments*", "output*", "scripts*",]

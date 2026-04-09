@@ -1,0 +1,70 @@
+%!TEX root = SMA-book.tex
+
+% Useful info on newcomand: https://tex.stackexchange.com/questions/117358/newcommand-argument-confusion
+
+
+% Editing utilities (comments, todos)
+\usepackage{comment}
+\usepackage{xcolor}
+\newcommand\issue[1]{\textcolor{red}{#1}}
+% \renewcommand\issue[1]{} % Uncomment to turn off red highlighting
+\usepackage{todonotes}
+
+
+% --------------------------------------------------------------------------------------------------
+% General Math.  
+% --------------------------------------------------------------------------------------------------
+
+% Common math commands. 
+\newcommand*{\abs}[1]{\left\lvert#1\right\rvert}
+\newcommand{\R}{\mathbb{R}}
+\newcommand*{\suchthat}{\,\mathrel{\big|}\,}
+\newcommand{\Exp}[1]{\exp\mathopen{}\left\{#1\right\}\mathclose{}}
+\newcommand{\Log}[1]{\log\mathopen{}\left\{#1\right\}\mathclose{}}
+\newcommand{\BigO}{\mathcal{O}}
+\newcommand{\Def}{\coloneqq} % coloneqq comes from the mathtools package. 
+\let\oldd\d\renewcommand\d{\relax\ifmmode\mathrm{d}\else\oldd\fi} %make \d be mathrm{d} in math mode, usual defn as underdot(?) in text mode
+\newcommand{\proptoAdd}{\overset{\mathrm{add}}{\propto}} % Absorbs additive constants
+\newcommand{\diag}{\textrm{diag}}
+\newcommand{\indicator}[1]{\mathds{1}_{#1}}
+
+\DeclareMathOperator*{\argmax}{argmax}
+\DeclareMathOperator*{\argmin}{argmin}
+\DeclarePairedDelimiterX\innerp[2]{(}{)}{#1\delimsize\vert\mathopen{}#2}
+\DeclarePairedDelimiter{\ceil}{\lceil}{\rceil}
+
+% Linear algebra.
+\newcommand*{\norm}[1]{\left\lVert#1\right\rVert}
+\newcommand{\bx}{\mathbf{x}}
+\newcommand{\bw}{\mathbf{w}}
+\newcommand{\oneVec}[1][]{\boldsymbol{1}_{#1}}
+\newcommand{\idMat}{\mathbf{I}}
+\newcommand{\bS}{\mathbf{S}}
+\newcommand{\bK}{\mathbf{K}}
+\newcommand{\ba}{\mathbf{a}}
+\newcommand{\bb}{\mathbf{b}}
+
+% Probability. 
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\Cov}{\mathrm{Cov}}
+\newcommand{\Cor}{\mathrm{Cor}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\Gaussian}{\mathcal{N}}
+\newcommand{\LN}{\mathrm{LN}} % Log-normal distribution 
+\newcommand{\eqDist}{\overset{d}{=}} % Equality in distribution 
+\newcommand{\given}{\mid} 
+\DeclarePairedDelimiterX{\divergencex}[2]{(}{)}{%
+  #1\;\delimsize\|\;#2%
+}
+\newcommand{\divergence}{\mathcal{D}\divergencex}
+\newcommand{\KL}{\mathcal{D}_{\mathrm{KL}}\divergencex}
+\newcommand{\law}{\textrm{law}}
+\newcommand{\cv}{\mathsf{cv}} % coefficient of variation
+
+% Other
+\newcommand{\cst}{C}
+
+
+
+

@@ -1,0 +1,429 @@
+---
+title: "testing_gp_models"
+output: html_document
+---
+
+After running the first round of emulator fitting and MCMC sampling, the 
+stationary GP models used appeared not to be appropriate for this 
+experiment. This document explores alternative combinations of models and
+initial designs that are more appropriate. The motivating idea is to better
+capture the global trend to produce GP priors that are reasonable with respect
+to the goal of modeling probability density functions. We try to accomplish
+this by combining three strategies:
+1.) Modeling the log unnormalized posterior density, rather than the log-likelihood,
+so that the effect of the prior driving down the tails can be leveraged by
+the GP model.
+2.) Fitting a trend that decreases as distance from the design increases. For now
+we consider quadratic trends, but more sophisticated approaches could be 
+considered (e.g., Roshan Joseph's composite GP approach).
+3.) Choose an initial design geared towards both capturing the global trend,
+as well as local variation. A simple point is to use a space-filling design
+within the bulk of the prior distribution, then sample some points way
+out in the tails.
+
+There are different considerations depending on whether forward model 
+emulation or log density emulation is utilized.
+
+Forward model: in general, the behavior of the forward model in the tails
+of the prior is not known. There is no distinction analogous to 
+"log-likelihood vs. log-unnormalized posterior density" in this setting.
+However, there still is opportunity for better initial designs. My hypothesis
+is that including some extrapalatory initial design points can still help deal
+with the tail issue. This should probably be combined with a global trend term, 
+but there is less prior information on what this trend should look like as 
+opposed to the log-unnormalized posterior density case. This seems like a
+good case for something like Roshan Joseph's composite GP approach.
+
+Log density: In addition to the design considerations, this setting has the 
+additional question of whether to emulate the log-likelihood or log unnormalied
+posterior density. This distinction may seem unimportant; given a
+log-likelihood emulator, a log-posterior emulator can be constructed by simply
+adding the log prior. It seems to me, however, that the potential benefit 
+of the log-posterior emulation approach is that in this setting we have 
+more (at least qualitative) prior information about what the black-box 
+function should look like. The log-likelihood can be quite flat in certain
+regions, and may not be decreasing even far in the tails of the prior.
+However, with the log-posterior we know the tails have to decrease and can 
+make this information into the GP model using a global trend.
+
+
+```{r}
+set.seed(543653)
+
+library(data.table)
+library(ggplot2)
+library(patchwork)
+library(scales)
+library(grid)
+library(support)
+
+
+experiment_tag <- "banana"
+
+base_dir <- file.path("/projectnb", "dietzelab", "arober", "bip-surrogates-paper")
+code_dir <- file.path("/projectnb", "dietzelab", "arober", "gp-calibration")
+src_dir <- file.path(code_dir, "src")
+experiment_dir <- file.path(base_dir, "experiments", experiment_tag)
+inv_prob_dir <- file.path(experiment_dir, "output", "inv_prob_setup")
+settings_dir <- file.path(experiment_dir, "output", "alg_settings")
+
+# Source required files.
+source(file.path(src_dir, "general_helper_functions.r"))
+source(file.path(src_dir, "statistical_helper_functions.r"))
+source(file.path(src_dir, "plotting_helper_functions.r"))
+source(file.path(src_dir, "mcmc_helper_functions.r"))
+source(file.path(src_dir, "seq_design.r"))
+source(file.path(src_dir, "gp_helper_functions.r"))
+source(file.path(src_dir, "gpWrapper.r"))
+source(file.path(src_dir, "llikEmulator.r"))
+source(file.path(src_dir, "gp_mcmc_functions.r"))
+source(file.path(base_dir, "scripts", "helper", "sim_study_functions.r"))
+```
+
+# Read inputs for analysis
+
+```{r}
+# Inverse problem object and algorithm/model settings.
+inv_prob <- readRDS(file.path(inv_prob_dir, "inv_prob_list.rds"))
+em_settings <- readRDS(file.path(settings_dir, "em_settings.rds"))
+mcmc_settings <- readRDS(file.path(settings_dir, "mcmc_settings.rds"))
+```
+
+```{r}
+# Read exact MCMC samples.
+samp_dt <- fread(file.path(out_dir, "samp_exact.csv"))
+test_info_prior <- readRDS(file.path(out_dir, "test_info_prior.rds"))
+test_info_post <- readRDS(file.path(out_dir, "test_info_post.rds"))
+```
+
+# Set up grid for plotting
+```{r}
+# 2d grid for plotting. Include extrapolations well into the tails of the prior.
+# Note that priors in this case are independent N(0,1) for each parameter.
+q <- qnorm(c(.001, .999))
+extrap_dist <- c(-2,2)
+
+input_grid <- get_batch_design("tensor_product_grid", N_batch=50^2,
+                               bounds=cbind(q+extrap_dist,q+extrap_dist))
+colnames(input_grid) <- inv_prob$par_names
+test_info_grid <- get_init_design_list(inv_prob, inputs=input_grid, 
+                                       design_method="tensor_product_grid",
+                                       N_design=50^2)
+
+# Data for plotting.
+plt_df <- data.table(test_info_grid$input, lprior=test_info_grid$lprior,
+                     llik=test_info_grid$llik, lpost=test_info_grid$lpost,
+                     fwd=drop(test_info_grid$fwd))
+plt_df$post <- exp(plt_df$lpost)
+
+# Subsample from posterior.
+post_samp_subset <- as.data.frame(select_mcmc_samp_mat(samp_dt, thin=100L))
+
+# For drawing box that captures more prior mass. These are the corners of 
+# the box (must be ordered sequentially - here, clockwise).
+input_prior_bounds <- rbind(q, c(q[2], q[2]), -q, c(q[1], q[1]))
+colnames(input_prior_bounds) <- inv_prob$par_names
+input_prior_bounds <- as.data.table(input_prior_bounds)
+```
+
+```{r}
+# Base plots for forward model, log prior, log likelihood, log posterior,
+# and posterior density.
+plt_fwd <- ggplot() +
+              geom_raster(aes(x=u1, y=u2, fill=fwd), plt_df, interpolate=TRUE) +
+              scale_fill_viridis_c(name="fwd") +
+              coord_fixed() +
+              ggtitle("Forward model") + 
+              geom_polygon(data=input_prior_bounds, aes(x=u1, y=u2), fill=NA, color="white") +
+              theme_minimal()
+plt_lprior <- ggplot() +
+               geom_contour_filled(aes(x=u1, y=u2, z=lprior), plt_df) +
+               ggtitle("Log Prior Density") +
+               geom_polygon(data=input_prior_bounds, aes(x=u1, y=u2), fill=NA, color="white")
+plt_llik <- ggplot() +
+              geom_raster(aes(x=u1, y=u2, fill=llik), plt_df, interpolate=TRUE) +
+              scale_fill_viridis_c(name="llik") +
+              coord_fixed() +
+              ggtitle("Log Likelihood") + 
+              geom_polygon(data=input_prior_bounds, aes(x=u1, y=u2), fill=NA, color="white")
+plt_post <- ggplot() +
+              geom_raster(aes(x=u1, y=u2, fill=exp(lpost)), plt_df, interpolate=TRUE) +
+              scale_fill_viridis_c(name="Post") +
+              coord_fixed() +
+              ggtitle("Posterior density") + 
+              geom_polygon(data=input_prior_bounds, aes(x=u1, y=u2), fill=NA, color="white")
+plt_lpost <- ggplot() +
+              geom_contour_filled(aes(x=u1, y=u2, z=lpost), plt_df) +
+              ggtitle("Log Posterior density") +
+              geom_polygon(data=input_prior_bounds, aes(x=u1, y=u2), fill=NA, color="white")
+
+plot(plt_fwd)
+plot(plt_lprior)
+plot(plt_llik)
+plot(plt_lpost)
+plot(plt_post)
+```
+
+# Initial Designs.
+
+```{r}
+#
+# Space-filling design, no extrapolation points.
+#
+
+n_design <- 7L
+design_info_1 <- get_init_design_list(inv_prob, design_method="LHS", N_design=n_design)
+design_info_dt_1 <- data.table(design_info_1$input,
+                               fwd = drop(design_info_1$fwd),
+                               llik = design_info_1$llik,
+                               lprior = design_info_1$lprior,
+                               lpost = design_info_1$lpost)
+```
+
+
+```{r}
+#
+# Design with extrapolation points.
+#
+
+# Number of non-extrapolation points.
+n_internal <- 3L
+
+# "Internal" design points.
+design_internal <- get_init_design_list(inv_prob, design_method="LHS", N_design=n_internal)
+
+# "Extrapolation" design points. Currently setting as a percentage of the 
+# prior quantiles.
+extrap_scale <- 1.8
+extrap_inputs <- rbind(c(0, extrap_scale * q[2]),
+                       c(extrap_scale * q[2], 0),
+                       c(0, extrap_scale * q[1]),
+                       c(extrap_scale * q[1], 0))
+colnames(extrap_inputs) <- inv_prob$par_names
+design_extrap <- get_init_design_list(inv_prob, "manual", 4, inputs=extrap_inputs)
+
+# Combine design.
+design_info_2 <- list(input = rbind(design_internal$input, design_extrap$input),
+                    fwd = rbind(design_internal$fwd, design_extrap$fwd),
+                    llik = c(design_internal$llik, design_extrap$llik),
+                    lprior = c(design_internal$lprior, design_extrap$lprior),
+                    lpost = c(design_internal$lpost, design_extrap$lpost))
+
+design_info_dt_2 <- data.table(design_info_2$input,
+                             fwd = drop(design_info_2$fwd),
+                             llik = design_info_2$llik,
+                             lprior = design_info_2$lprior,
+                             lpost = design_info_2$lpost)
+```
+
+
+# Forward model emulators.
+```{r}
+# Fit stationary GPs.
+em_fwd_1 <- em_settings$em_fwd$fit_em(design_info_1, inv_prob)
+em_fwd_2 <- em_settings$em_fwd$fit_em(design_info_2, inv_prob)
+
+# Forward model predictions.
+pred_fwd_1 <- em_fwd_1$predict_emulator(test_info_grid$input)
+pred_fwd_2 <- em_fwd_2$predict_emulator(test_info_grid$input)
+plt_df[, `:=`(mean_fwd_1=drop(pred_fwd_1$mean), var_fwd_1=drop(pred_fwd_1$var),
+              mean_fwd_2=drop(pred_fwd_2$mean), var_fwd_2=drop(pred_fwd_2$var))]
+
+# Log-likelihood predictions.
+llik_pred_fwd_1 <- em_fwd_1$predict(test_info_grid$input, em_pred_list=pred_fwd_1)
+llik_pred_fwd_2 <- em_fwd_2$predict(test_info_grid$input, em_pred_list=pred_fwd_2)
+plt_df[, `:=`(llik_mean_fwd_1=drop(llik_pred_fwd_1$mean), llik_var_fwd_1=drop(llik_pred_fwd_1$var),
+              llik_mean_fwd_2=drop(llik_pred_fwd_2$mean), llik_var_fwd_2=drop(llik_pred_fwd_2$var))]
+
+# pred_df_long<- data.table::melt(plt_df, id.vars=c("u1", "u2"), 
+#                         variable.name="quantity", value.name="value")
+```
+
+## Forward model predictive distribution
+
+### Design 1
+```{r}
+plt_mean_fwd_1 <- ggplot() + 
+                  geom_raster(aes(x=u1, y=u2, fill=mean_fwd_1), plt_df, interpolate=TRUE) +
+                  scale_fill_viridis_c(name="mean") +
+                  coord_fixed() +
+                  geom_point(aes(x=u1, y=u2), design_info_dt_1, color="red") + 
+                  geom_polygon(data=input_prior_bounds, aes(x=u1, y=u2), fill=NA, color="white") + 
+                  ggtitle("Fwd mean pred")
+
+plt_sd_fwd_1 <- ggplot() + 
+                  geom_raster(aes(x=u1, y=u2, fill=sqrt(var_fwd_1)), plt_df, interpolate=TRUE) +
+                  scale_fill_viridis_c(name="sd") +
+                  coord_fixed() +
+                  geom_point(aes(x=u1, y=u2), design_info_dt_1, color="red") + 
+                  geom_polygon(data=input_prior_bounds, aes(x=u1, y=u2), fill=NA, color="white") + 
+                  ggtitle("Fwd sd pred")
+
+plot(plt_fwd + plt_mean_fwd_1 + plt_sd_fwd_1)
+```
+
+### Design 2
+```{r}
+plt_mean_fwd_2 <- ggplot() + 
+                  geom_raster(aes(x=u1, y=u2, fill=mean_fwd_2), plt_df, interpolate=TRUE) +
+                  scale_fill_viridis_c(name="mean") +
+                  coord_fixed() +
+                  geom_point(aes(x=u1, y=u2), design_info_dt_2, color="red") + 
+                  geom_polygon(data=input_prior_bounds, aes(x=u1, y=u2), fill=NA, color="white") + 
+                  ggtitle("Fwd mean pred")
+
+plt_sd_fwd_2 <- ggplot() + 
+                  geom_raster(aes(x=u1, y=u2, fill=sqrt(var_fwd_2)), plt_df, interpolate=TRUE) +
+                  scale_fill_viridis_c(name="sd") +
+                  coord_fixed() +
+                  geom_point(aes(x=u1, y=u2), design_info_dt_2, color="red") + 
+                  geom_polygon(data=input_prior_bounds, aes(x=u1, y=u2), fill=NA, color="white") + 
+                  ggtitle("Fwd sd pred")
+
+plot(plt_fwd + plt_mean_fwd_2 + plt_sd_fwd_2)
+```
+
+## Induced log-likelihood predictive distribution
+
+### Design 1
+
+```{r}
+plt_llik_mean_fwd_1 <- ggplot() + 
+                  geom_raster(aes(x=u1, y=u2, fill=llik_mean_fwd_1), plt_df, interpolate=TRUE) +
+                  scale_fill_viridis_c(name="mean") +
+                  coord_fixed() +
+                  geom_point(aes(x=u1, y=u2), design_info_dt_1, color="red") + 
+                  geom_polygon(data=input_prior_bounds, aes(x=u1, y=u2), fill=NA, color="white") + 
+                  ggtitle("llik mean pred")
+
+plt_llik_sd_fwd_1 <- ggplot() + 
+                  geom_raster(aes(x=u1, y=u2, fill=sqrt(llik_var_fwd_1)), plt_df, interpolate=TRUE) +
+                  scale_fill_viridis_c(name="sd") +
+                  coord_fixed() +
+                  geom_point(aes(x=u1, y=u2), design_info_dt_1, color="red") + 
+                  geom_polygon(data=input_prior_bounds, aes(x=u1, y=u2), fill=NA, color="white") + 
+                  ggtitle("llik sd pred")
+
+plot(plt_llik + plt_llik_mean_fwd_1 + plt_llik_sd_fwd_1)
+```
+
+```{r}
+em_fwd_1$plot_pred_validation(test_info_grid$input, em_pred_list=pred_fwd_1,
+                              true_llik=test_info_grid$llik)
+```
+
+
+```{r}
+plt_lik_mean_fwd_1 <- ggplot() + 
+                  geom_raster(aes(x=u1, y=u2, fill=exp(llik_mean_fwd_1)), plt_df, interpolate=TRUE) +
+                  scale_fill_viridis_c(name="mean") +
+                  coord_fixed() +
+                  geom_point(aes(x=u1, y=u2), post_samp_subset, color="gray", alpha=0.5) + 
+                  geom_point(aes(x=u1, y=u2), design_info_dt_1, color="red") + 
+                  geom_polygon(data=input_prior_bounds, aes(x=u1, y=u2), fill=NA, color="white") + 
+                  ggtitle("lik mean pred")
+plot(plt_lik_mean_fwd_1)
+```
+
+
+### Design 2
+
+```{r}
+plt_llik_mean_fwd_2 <- ggplot() + 
+                  geom_raster(aes(x=u1, y=u2, fill=llik_mean_fwd_2), plt_df, interpolate=TRUE) +
+                  scale_fill_viridis_c(name="mean") +
+                  coord_fixed() +
+                  geom_point(aes(x=u1, y=u2), design_info_dt_2, color="red") + 
+                  geom_polygon(data=input_prior_bounds, aes(x=u1, y=u2), fill=NA, color="white") + 
+                  ggtitle("llik mean pred")
+
+plt_llik_sd_fwd_2 <- ggplot() + 
+                  geom_raster(aes(x=u1, y=u2, fill=sqrt(llik_var_fwd_2)), plt_df, interpolate=TRUE) +
+                  scale_fill_viridis_c(name="sd") +
+                  coord_fixed() +
+                  geom_point(aes(x=u1, y=u2), design_info_dt_2, color="red") + 
+                  geom_polygon(data=input_prior_bounds, aes(x=u1, y=u2), fill=NA, color="white") + 
+                  ggtitle("llik sd pred")
+
+plot(plt_llik + plt_llik_mean_fwd_2 + plt_llik_sd_fwd_2)
+```
+
+```{r}
+plt_lik_mean_fwd_2 <- ggplot() + 
+                  geom_raster(aes(x=u1, y=u2, fill=exp(llik_mean_fwd_2)), plt_df, interpolate=TRUE) +
+                  scale_fill_viridis_c(name="mean") +
+                  coord_fixed() +
+                  geom_point(aes(x=u1, y=u2), post_samp_subset, color="gray", alpha=0.5) + 
+                  geom_point(aes(x=u1, y=u2), design_info_dt_2, color="red") + 
+                  geom_polygon(data=input_prior_bounds, aes(x=u1, y=u2), fill=NA, color="white") + 
+                  ggtitle("lik mean pred")
+plot(plt_lik_mean_fwd_2)
+```
+
+
+
+```{r}
+em_fwd_2$plot_pred_validation(test_info_grid$input, em_pred_list=pred_fwd_2,
+                              true_llik=test_info_grid$llik)
+```
+
+## MCMC: forward model emulator design 1
+```{r}
+mcmc_settings_fwd <- mcmc_settings[c("mean", "marginal", "mcwmh-ind", "mcwmh-joint")]
+
+mcmc_results_fwd_1 <- run_mcmc_comparison(em_fwd_1, inv_prob$par_prior, 
+                                          mcmc_settings_fwd, return=TRUE)
+```
+
+```{r}
+mcmc_mean_fwd_1 <- mcmc_results_fwd_1$mean$samp
+trace_plts <- get_trace_plots(mcmc_mean_fwd_1)
+trace_plt_llik <- get_trace_plots(mcmc_results_fwd_1$mean$info,
+                                  param_types="dens", param_names="llik")
+
+for(plt in trace_plts) plot(plt)
+plot(trace_plt_llik[[1]])
+
+mcmc_mean_fwd_1 <- select_mcmc_samp_mat(mcmc_mean_fwd_1, thin=10)
+support_pts <- support::sp(n=2000L, p=2, dist.samp=mcmc_mean_fwd_1)
+mcmc_mean_fwd_1 <- support_pts$sp
+colnames(mcmc_mean_fwd_1) <- inv_prob$par_names
+```
+
+```{r}
+plt_post + 
+  geom_point(aes(x=u1, y=u2), design_info_dt_1, color="red") + 
+  geom_point(aes(x=u1, y=u2), as.data.table(mcmc_mean_fwd_1), color="gray", alpha=0.5)
+```
+
+## MCMC: forward model emulator design 2
+```{r}
+mcmc_results_fwd_2 <- run_mcmc_comparison(em_fwd_2, inv_prob$par_prior, 
+                                          mcmc_settings_fwd, return=TRUE)
+```
+      
+
+
+# Log-likelihood/Log-posterior emulators.
+```{r}
+# Fit GP for log-likelihood.
+gp_obj <- gpWrapperHet(design_info$input, matrix(design_info$llik, ncol=1),
+                       scale_input=TRUE, normalize_output=TRUE)
+gp_obj$set_gp_prior("Gaussian", "constant", include_noise=FALSE)
+gp_obj$fit()
+
+# Instantiate and save log-likelihood emulator object.
+llik_em <- llikEmulatorGP("em_llik", gp_obj, default_conditional=FALSE, 
+                          default_normalize=TRUE, 
+                          lik_par=inv_prob$llik_obj$get_lik_par(), 
+                          llik_bounds=inv_prob$llik_obj$get_llik_bounds())
+
+
+
+```
+
+
+
+
+
+
