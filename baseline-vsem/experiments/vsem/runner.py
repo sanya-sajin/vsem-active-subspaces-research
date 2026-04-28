@@ -3,9 +3,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-import vsem_jax as vsem
-from inverse_problem import InvProb, VSEMPrior, VSEMLikelihood
-from surrogate import VSEMTest
+from uncprop.models.vsem import vsemjax as vsem
+#from inverse_problem import InvProb, VSEMPrior, VSEMLikelihood
+#from surrogate import VSEMTest
+from uncprop.models.vsem.inverse_problem import generate_vsem_inv_prob_rep, VSEMPrior, VSEMLikelihood
+from uncprop.models.vsem.surrogate import fit_vsem_surrogate
 
 
 def run_vsem_experiment(rng: np.random.Generator,
