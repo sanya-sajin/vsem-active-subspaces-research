@@ -17,7 +17,7 @@ from uncprop.models.vsem.inverse_problem import generate_vsem_inv_prob_rep
 # Output location
 # ---------------------------------------------------------------------
 
-OUT_DIR = Path("out/active_subspace_final")
+OUT_DIR = Path("out/active_subspace_loglik_prior")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -35,23 +35,22 @@ SAMPLE_SIZES = [50, 100, 200]
 
 
 # ---------------------------------------------------------------------
-# Build VSEM posterior using Andrew's code
+# Build VSEM inverse problem using Andrew's code
 # ---------------------------------------------------------------------
 
-def build_posterior(key, param_names):
+def build_inverse_problem(key, param_names):
     """
     Build one synthetic VSEM Bayesian inverse problem.
 
-    This uses Andrew's generate_vsem_inv_prob_rep function.
-    It creates:
-    - true synthetic VSEM parameters
-    - synthetic LAI observations
-    - prior over selected calibration parameters
-    - likelihood
-    - posterior = prior x likelihood
+    This uses the generate_vsem_inv_prob_rep function.
+    It creates an object containing:
+    - the prior over selected calibration parameters
+    - the likelihood from synthetic LAI observations
+    - the posterior log density, available for later MCMC comparisons
+
     """
 
-    posterior = generate_vsem_inv_prob_rep(
+    inverse_problem = generate_vsem_inv_prob_rep(
         key=key,
         par_names=param_names,
         n_windows=12,
@@ -60,23 +59,25 @@ def build_posterior(key, param_names):
         noise_cov_tril=jnp.eye(12),
     )
 
-    return posterior
+    return inverse_problem
 
 
 # ---------------------------------------------------------------------
 # Active subspace computation
 # ---------------------------------------------------------------------
 
-def compute_active_subspace(posterior, key, n_samples):
+def compute_active_subspace(inverse_problem, key, n_samples):
     """
-    Compute the active subspace matrix for one posterior.
+    Compute the active subspace matrix using prior samples and
+    log-likelihood gradients.
 
     We work in normalized coordinates z in [0, 1]^d so that all
     parameters are comparable even if their physical units/ranges differ.
+
     """
 
-    low, high = posterior.prior.support
-    dim = posterior.prior.dim
+    low, high = inverse_problem.prior.support
+    dim = inverse_problem.prior.dim
 
     # Sample normalized parameter values z in [0, 1]^d.
     z = jr.uniform(key, shape=(n_samples, dim))
@@ -85,17 +86,18 @@ def compute_active_subspace(posterior, key, n_samples):
     def z_to_theta(z_single):
         return low + z_single * (high - low)
 
-    # Define log posterior as a function of normalized coordinates.
-    def logpost_normalized(z_single):
+    # Define log likelihood as a function of normalized coordinates.
+    # This is the active-subspace target function.
+    def loglik_normalized(z_single):
         theta = z_to_theta(z_single)
-        return posterior.log_density(jnp.atleast_2d(theta)).squeeze()
+        return inverse_problem.likelihood.log_density(jnp.atleast_2d(theta)).squeeze()
 
-    # Compute gradients of log posterior with respect to normalized parameters.
-    grad_fn = jax.grad(logpost_normalized)
+    # Compute gradients of log likelihood with respect to normalized parameters.
+    grad_fn = jax.grad(loglik_normalized)
     grads = jax.vmap(grad_fn)(z)
 
     # Estimate active subspace matrix:
-    # C = average of grad log posterior * grad log posterior^T
+    # C = average of grad log likelihood * grad log likelihood^T
     C = grads.T @ grads / n_samples
 
     # Eigendecompose C.
@@ -109,17 +111,17 @@ def compute_active_subspace(posterior, key, n_samples):
     # Save physical parameter samples too, mainly for inspection/debugging.
     theta_samples = jax.vmap(z_to_theta)(z)
 
-    # Evaluate log posterior at sampled points.
-    logp = jax.vmap(logpost_normalized)(z)
+    # Evaluate log likelihood at sampled points for diagnostics/plots.
+    loglik = jax.vmap(loglik_normalized)(z)
 
-    return z, theta_samples, logp, grads, C, eigvals, eigvecs
+    return z, theta_samples, loglik, grads, C, eigvals, eigvecs
 
 
 # ---------------------------------------------------------------------
 # Saving outputs
 # ---------------------------------------------------------------------
 
-def save_run_outputs(run_dir, param_names, z, theta_samples, logp, grads, C, eigvals, eigvecs):
+def save_run_outputs(run_dir, param_names, z, theta_samples, loglik, grads, C, eigvals, eigvecs):
     """
     Save numerical results for one run.
     """
@@ -133,7 +135,7 @@ def save_run_outputs(run_dir, param_names, z, theta_samples, logp, grads, C, eig
         run_dir / "active_subspace_results.npz",
         normalized_samples=z,
         physical_samples=theta_samples,
-        log_posterior=logp,
+        log_likelihood=loglik,
         gradients_normalized=grads,
         active_subspace_matrix=C,
         eigvals=eigvals,
@@ -225,24 +227,24 @@ def plot_first_direction_loadings(label, param_names, eigvecs, run_dir):
     plt.close()
 
 
-def plot_sufficient_summary(label, z, logp, eigvecs, run_dir):
+def plot_sufficient_summary(label, z, loglik, eigvecs, run_dir):
     """
     Make 1D and 2D active subspace diagnostic plots.
 
     1D plot:
-    log posterior vs first active variable
+    log likelihood vs first active variable
 
     2D plot:
-    first active variable vs second active variable, colored by log posterior
+    first active variable vs second active variable, colored by log likelihood
     """
 
     # First active variable
     y1 = z @ eigvecs[:, 0]
 
     plt.figure(figsize=(6, 4))
-    plt.scatter(y1, logp, alpha=0.7)
+    plt.scatter(y1, loglik, alpha=0.7)
     plt.xlabel("First active variable")
-    plt.ylabel("Log posterior")
+    plt.ylabel("Log likelihood")
     plt.title(f"1D Sufficient Summary: {label}")
     plt.tight_layout()
     plt.savefig(run_dir / "sufficient_summary_1d.png", dpi=300)
@@ -253,13 +255,13 @@ def plot_sufficient_summary(label, z, logp, eigvecs, run_dir):
         y2 = z @ eigvecs[:, 1]
 
         plt.figure(figsize=(6, 5))
-        scatter = plt.scatter(y1, y2, c=logp, alpha=0.75)
+        scatter = plt.scatter(y1, y2, c=loglik, alpha=0.75)
         plt.xlabel("First active variable")
         plt.ylabel("Second active variable")
         plt.title(f"2D Active Subspace: {label}")
-        plt.colorbar(scatter, label="Log posterior")
+        plt.colorbar(scatter, label="Log likelihood")
         plt.tight_layout()
-        plt.savefig(run_dir / "active_subspace_2d_logposterior.png", dpi=300)
+        plt.savefig(run_dir / "active_subspace_2d_loglikelihood.png", dpi=300)
         plt.close()
 
 
@@ -318,14 +320,16 @@ def main():
 
             # Make a reproducible key for this run.
             key = jr.fold_in(base_key, set_idx * 1000 + sample_idx)
-            key_post, key_as = jr.split(key)
+            key_inv, key_as = jr.split(key)
 
-            # Build posterior.
-            posterior = build_posterior(key_post, param_names)
+            # Build inverse problem object.
+            # This contains prior, likelihood, and posterior.
+            # For active-subspace construction, we use prior + likelihood only.
+            inverse_problem = build_inverse_problem(key_inv, param_names)
 
             # Compute active subspace.
-            z, theta_samples, logp, grads, C, eigvals, eigvecs = compute_active_subspace(
-                posterior=posterior,
+            z, theta_samples, loglik, grads, C, eigvals, eigvecs = compute_active_subspace(
+                inverse_problem=inverse_problem,
                 key=key_as,
                 n_samples=n_samples,
             )
@@ -338,7 +342,7 @@ def main():
                 "param_names": param_names,
                 "z": z,
                 "theta_samples": theta_samples,
-                "logp": logp,
+                "loglik": loglik,
                 "grads": grads,
                 "C": C,
                 "eigvals": eigvals,
@@ -355,7 +359,7 @@ def main():
                 param_names=param_names,
                 z=z,
                 theta_samples=theta_samples,
-                logp=logp,
+                loglik=loglik,
                 grads=grads,
                 C=C,
                 eigvals=eigvals,
@@ -363,7 +367,7 @@ def main():
             )
 
             plot_first_direction_loadings(label, param_names, eigvecs, run_dir)
-            plot_sufficient_summary(label, z, logp, eigvecs, run_dir)
+            plot_sufficient_summary(label, z, loglik, eigvecs, run_dir)
 
             # Print results to terminal.
             print("Eigenvalues:")
