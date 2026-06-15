@@ -35,3 +35,4 @@ figures/
 ## Python packaging
 *.egg-info/
 
+.DS_Store
