@@ -284,9 +284,14 @@ def run_mcmc_active_subspace_chains(
     samples_y_chains = jnp.stack(y_chains)
     samples_z_chains = jnp.stack(z_chains)
     samples_theta_chains = jnp.stack(theta_chains)
-    rhat = compute_rhat(samples_theta_chains)
 
-    return samples_y_chains, samples_z_chains, samples_theta_chains, rhat
+    # Primary AS convergence diagnostic: R-hat in active-variable space.
+    rhat_y = compute_rhat(samples_y_chains)
+
+    # Secondary diagnostic: R-hat after mapping AS samples back to original parameters.
+    rhat_theta = compute_rhat(samples_theta_chains)
+
+    return samples_y_chains, samples_z_chains, samples_theta_chains, rhat_y, rhat_theta
 
 
 # ---------------------------------------------------------------------
@@ -338,7 +343,7 @@ def compare_mcmc_quality(
             print(f"  Running active subspace MCMC with {n_comp} components")
 
             key, as_key = jr.split(key)
-            samples_y_chains, samples_z_as_chains, samples_theta_as_chains, as_rhat = (
+            samples_y_chains, samples_z_as_chains, samples_theta_as_chains, as_rhat_y, as_rhat_theta = (
                 run_mcmc_active_subspace_chains(
                     posterior=posterior,
                     key=as_key,
@@ -350,8 +355,11 @@ def compare_mcmc_quality(
                 )
             )
 
-            print(f"  AS {n_comp} R-hat: {as_rhat}")
-            print(f"  AS {n_comp} Max R-hat: {float(jnp.max(as_rhat)):.4f}")
+            print(f"  AS {n_comp} y-space R-hat: {as_rhat_y}")
+            print(f"  AS {n_comp} y-space Max R-hat: {float(jnp.max(as_rhat_y)):.4f}")
+
+            print(f"  AS {n_comp} theta-space R-hat: {as_rhat_theta}")
+            print(f"  AS {n_comp} theta-space Max R-hat: {float(jnp.max(as_rhat_theta)):.4f}")
 
             # Flatten AS chains for mean/std summaries and histogram overlays.
             samples_theta_as = samples_theta_as_chains.reshape(
@@ -365,10 +373,13 @@ def compare_mcmc_quality(
             std_error = jnp.mean(jnp.abs((full_std - as_std) / full_std))
 
             as_results[n_comp] = {
+                "samples_y_chains": samples_y_chains,
                 "samples_theta": samples_theta_as,
                 "samples_theta_chains": samples_theta_as_chains,
-                "rhat": as_rhat,
-                "max_rhat": float(jnp.max(as_rhat)),
+                "rhat_y": as_rhat_y,
+                "max_rhat_y": float(jnp.max(as_rhat_y)),
+                "rhat_theta": as_rhat_theta,
+                "max_rhat_theta": float(jnp.max(as_rhat_theta)),
                 "mean_error": float(mean_error),
                 "std_error": float(std_error),
                 "variance_explained": float(cumulative_variance[n_comp - 1]),
@@ -597,7 +608,8 @@ def write_mcmc_comparison_csv(comparison_results, out_dir):
             "mean_error",
             "std_error",
             "full_max_rhat",
-            "as_max_rhat",
+            "as_y_max_rhat",
+            "as_theta_max_rhat",
         ])
 
         for label, res in comparison_results.items():
@@ -609,7 +621,8 @@ def write_mcmc_comparison_csv(comparison_results, out_dir):
                     f"{as_res['mean_error']:.4f}",
                     f"{as_res['std_error']:.4f}",
                     f"{res['full_max_rhat']:.4f}",
-                    f"{as_res['max_rhat']:.4f}",
+                    f"{as_res['max_rhat_y']:.4f}",
+                    f"{as_res['max_rhat_theta']:.4f}",
                 ])
 
 
